@@ -37,17 +37,10 @@ namespace Emby.Server.Implementations.Images
         {
             var view = (UserView)item;
 
-            // A random selection of the channels' logos (Finly)
+            // A random selection of the logos of the channels every restricted profile can see (Finly)
             if (view.ViewType == CollectionType.livetv)
             {
-                var channels = BaseItem.LibraryManager.GetItemList(new InternalItemsQuery
-                {
-                    IncludeItemTypes = [BaseItemKind.LiveTvChannel],
-                    DtoOptions = new DtoOptions(false)
-                })
-                    .Where(i => i is LiveTvChannel { ChannelType: ChannelType.TV }
-                        && i.GetImageInfo(ImageType.Primary, 0)?.IsLocalFile == true)
-                    .ToList();
+                var channels = LogoWallChannels.GetChannels(BaseItem.LibraryManager, _userManager);
                 channels.Shuffle();
                 return channels;
             }
@@ -130,10 +123,11 @@ namespace Emby.Server.Implementations.Images
         /// <inheritdoc />
         protected override bool HasChangedByDate(BaseItem item, ItemImageInfo image)
         {
-            // A new selection of channels each day
+            // A new selection of channels each day. The daily guide refresh refreshes the library (Finly), so an image made
+            // a little under a day before counts as a day old.
             if (item is UserView { ViewType: CollectionType.livetv })
             {
-                return image.DateModified < DateTime.UtcNow.AddDays(-1) || base.HasChangedByDate(item, image);
+                return image.DateModified < DateTime.UtcNow.AddHours(-20) || base.HasChangedByDate(item, image);
             }
 
             return base.HasChangedByDate(item, image);
