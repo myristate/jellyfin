@@ -493,7 +493,7 @@ namespace Jellyfin.LiveTv
                 catch (FileNotFoundException)
                 {
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
                 }
             }

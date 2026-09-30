@@ -22,11 +22,6 @@ namespace Jellyfin.LiveTv.TunerHosts
 {
     public class SharedHttpStream : LiveStream, IDirectStreamProvider
     {
-        /// <summary>
-        /// How long to wait for the tuner to answer and to send the first data before giving up on opening.
-        /// </summary>
-        private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(15);
-
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IServerApplicationHost _appHost;
 
@@ -47,7 +42,28 @@ namespace Jellyfin.LiveTv.TunerHosts
             OriginalStreamId = originalStreamId;
         }
 
+        /// <summary>
+        /// Gets or sets how long to wait for the tuner to answer and to send the first data before giving up on opening.
+        /// </summary>
+        internal TimeSpan OpenTimeout { get; set; } = TimeSpan.FromSeconds(15);
+
         public override async Task Open(CancellationToken openCancellationToken)
+        {
+            try
+            {
+                await OpenStream(openCancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // (Finly) However opening failed, including the caller giving up, stop copying from the tuner so the
+                // tuner is released, and don't let anyone share this stream.
+                await StopCopying().ConfigureAwait(false);
+                Dispose();
+                throw;
+            }
+        }
+
+        private async Task OpenStream(CancellationToken openCancellationToken)
         {
             LiveStreamCancellationTokenSource.Token.ThrowIfCancellationRequested();
 
@@ -116,9 +132,8 @@ namespace Jellyfin.LiveTv.TunerHosts
             }
             catch (TimeoutException)
             {
-                // Headers but no data: stop copying so the tuner is released, and let the client retry or report it
+                // Headers but no data: the stream is closed by Open, let the client retry or report it
                 Logger.LogWarning("No data from {Url} within {Seconds} seconds, closing the stream", url, OpenTimeout.TotalSeconds);
-                await LiveStreamCancellationTokenSource.CancelAsync().ConfigureAwait(false);
                 throw;
             }
 

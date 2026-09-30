@@ -20,6 +20,7 @@ namespace Jellyfin.LiveTv.TunerHosts
     public class LiveStream : ILiveStream
     {
         private readonly IConfigurationManager _configurationManager;
+        private bool _disposed;
 
         public LiveStream(
             MediaSourceInfo mediaSource,
@@ -75,6 +76,11 @@ namespace Jellyfin.LiveTv.TunerHosts
         public DateTime DateOpened { get; protected set; }
 
         /// <summary>
+        /// Gets a value indicating whether the stream was disposed, which stops its copy from the tuner (Finly).
+        /// </summary>
+        internal bool IsDisposed => _disposed;
+
+        /// <summary>
         /// How many seconds of already buffered stream a viewer joining a running stream gets.
         /// </summary>
         internal const double JoinBacklogSeconds = 2.5;
@@ -94,6 +100,11 @@ namespace Jellyfin.LiveTv.TunerHosts
 
         public async Task Close()
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             EnableStreamSharing = false;
 
             long bytes = -1;
@@ -112,7 +123,24 @@ namespace Jellyfin.LiveTv.TunerHosts
                 (DateTime.UtcNow - DateOpened).TotalSeconds,
                 bytes / 1048576.0);
 
-            await LiveStreamCancellationTokenSource.CancelAsync().ConfigureAwait(false);
+            await StopCopying().ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Stops copying from the tuner, which releases it (Finly).
+        /// </summary>
+        /// <returns>A task.</returns>
+        protected async Task StopCopying()
+        {
+            EnableStreamSharing = false;
+            try
+            {
+                await LiveStreamCancellationTokenSource.CancelAsync().ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already stopped and disposed
+            }
         }
 
         public Stream GetStream()
@@ -179,10 +207,26 @@ namespace Jellyfin.LiveTv.TunerHosts
 
         protected virtual void Dispose(bool dispose)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             if (dispose)
             {
-                LiveStreamCancellationTokenSource?.Dispose();
+                // (Finly) Disposing a stream that is still copying stops the copy first, so the tuner is released
+                try
+                {
+                    LiveStreamCancellationTokenSource.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+
+                LiveStreamCancellationTokenSource.Dispose();
             }
+
+            _disposed = true;
         }
 
         protected async Task DeleteTempFiles(string path, int retryCount = 0)
