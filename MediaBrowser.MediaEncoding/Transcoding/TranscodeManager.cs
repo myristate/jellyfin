@@ -102,6 +102,15 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
     }
 
     /// <inheritdoc />
+    public IReadOnlyList<string>? GetActiveTranscodingPaths()
+    {
+        lock (_activeTranscodingJobs)
+        {
+            return _activeTranscodingJobs.Select(j => j.Path).OfType<string>().ToList();
+        }
+    }
+
+    /// <inheritdoc />
     public TranscodingJob? GetTranscodingJob(string playSessionId)
     {
         lock (_activeTranscodingJobs)

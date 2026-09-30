@@ -154,6 +154,7 @@ namespace Jellyfin.Server
             services.AddHostedService<TranscodeCacheCleaner>();
             services.AddHostedService<RecordingsHost>();
             services.AddHostedService<LiveStreamWatchdog>();
+            services.AddHostedService<TranscodeFolderSweeper>();
             services.AddHostedService<AutoDiscoveryHost>();
             services.AddHostedService<NfoUserDataSaver>();
             services.AddHostedService<LibraryChangedNotifier>();

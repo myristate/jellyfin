@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Streaming;
@@ -14,6 +15,12 @@ public interface ITranscodeManager
     /// Deletes all cached transcoded media files from the configured transcode path.
     /// </summary>
     void DeleteEncodedMediaCache();
+
+    /// <summary>
+    /// Gets the output paths of the transcoding jobs running now (Finly).
+    /// </summary>
+    /// <returns>The paths, or <c>null</c> when they can't be listed.</returns>
+    IReadOnlyList<string>? GetActiveTranscodingPaths() => null;
 
     /// <summary>
     /// Get transcoding job.
