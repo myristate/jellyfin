@@ -10,13 +10,33 @@ using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Model.Querying;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
 namespace Jellyfin.Controller.Tests.Entities;
 
-public class PlaylistTests
+// Shares BaseItem's static services with the other library tests, so it must not run alongside them.
+[Collection("LibraryManagerTests")]
+public sealed class PlaylistTests : IDisposable
 {
+    private readonly ILibraryManager _previousLibraryManager;
+    private readonly ILogger<BaseItem> _previousLogger;
+
+    public PlaylistTests()
+    {
+        _previousLibraryManager = BaseItem.LibraryManager;
+        _previousLogger = BaseItem.Logger;
+        BaseItem.Logger = NullLogger<BaseItem>.Instance;
+    }
+
+    public void Dispose()
+    {
+        BaseItem.LibraryManager = _previousLibraryManager;
+        BaseItem.Logger = _previousLogger;
+    }
+
     [Fact]
     public void IsVisible_PlaylistWithNothingLeftInIt_IsHidden()
     {

@@ -10,6 +10,8 @@ using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Playlists;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Xunit;
 
@@ -23,11 +25,14 @@ namespace Jellyfin.Controller.Tests.Entities;
 public sealed class HiddenItemsVisibilityTests : IDisposable
 {
     private readonly ILibraryManager _previousLibraryManager;
+    private readonly ILogger<BaseItem> _previousLogger;
     private readonly Dictionary<Guid, BaseItem> _library = [];
 
     public HiddenItemsVisibilityTests()
     {
         _previousLibraryManager = BaseItem.LibraryManager;
+        _previousLogger = BaseItem.Logger;
+        BaseItem.Logger = NullLogger<BaseItem>.Instance;
         var libraryManager = new Mock<ILibraryManager>();
         libraryManager.Setup(l => l.GetItemById(It.IsAny<Guid>())).Returns<Guid>(id => _library.GetValueOrDefault(id));
         libraryManager.Setup(l => l.GetItemList(It.IsAny<InternalItemsQuery>()))
@@ -36,7 +41,11 @@ public sealed class HiddenItemsVisibilityTests : IDisposable
         BaseItem.LibraryManager = libraryManager.Object;
     }
 
-    public void Dispose() => BaseItem.LibraryManager = _previousLibraryManager;
+    public void Dispose()
+    {
+        BaseItem.LibraryManager = _previousLibraryManager;
+        BaseItem.Logger = _previousLogger;
+    }
 
     [Fact]
     public void HiddenSeries_HidesItsEpisodes()
