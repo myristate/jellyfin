@@ -282,3 +282,8 @@ mono_crash.*.json
 # Devcontainer temp files
 .devcontainer/devcontainer-lock.json
 dotnet/
+
+# Finly build output
+finly/dist/
+finly/branding/out/
+finly/*.tgz

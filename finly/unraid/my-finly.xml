@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>finly</Name>
+  <Repository>finly-server:local</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <MyMAC/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/myristate/jellyfin</Support>
+  <Project>https://github.com/myristate/jellyfin</Project>
+  <ReadMe/>
+  <Overview>Finly, the family's own media server: a fork of Jellyfin 12.1 with kid-friendly profiles, a working kids TV guide and fixes. Runs alongside the official Jellyfin container on port 8097 with its own settings in /mnt/user/appdata/finly. Media folders are mounted read-only. Built locally with finly/build-and-deploy.sh in the server repo.</Overview>
+  <Category>MediaServer:Video</Category>
+  <WebUI>http://[IP]:[PORT:8096]</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/myristate/jellyfin/custom-12.1/finly/unraid/finly-icon.png</Icon>
+  <ExtraParams>--runtime=nvidia --tmpfs /transcode:rw,size=16g,mode=1777</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Host Port for 8096" Target="8096" Default="8097" Mode="tcp" Description="Finly web and app port (the official Jellyfin keeps 8096)" Type="Port" Display="always" Required="true" Mask="false">8097</Config>
+  <Config Name="Host Path for /config" Target="/config" Default="/mnt/user/appdata/finly" Mode="rw" Description="Finly's own settings, users and database" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/finly</Config>
+  <Config Name="TV Folder" Target="/tv" Default="/mnt/user/media/tv/" Mode="ro" Description="Shared with Jellyfin, read-only for Finly" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/media/tv/</Config>
+  <Config Name="Movies" Target="/movies" Default="/mnt/user/media/movies/" Mode="ro" Description="Shared with Jellyfin, read-only for Finly" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/media/movies/</Config>
+  <Config Name="NVIDIA_VISIBLE_DEVICES" Target="NVIDIA_VISIBLE_DEVICES" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">GPU-303f9dba-550b-c8c6-6c97-969dd2150bb6</Config>
+  <Config Name="NVIDIA_DRIVER_CAPABILITIES" Target="NVIDIA_DRIVER_CAPABILITIES" Default="all" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">all</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="" Type="Variable" Display="advanced-hide" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="" Type="Variable" Display="advanced-hide" Required="false" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="002" Mode="" Description="" Type="Variable" Display="advanced-hide" Required="false" Mask="false">002</Config>
+  <TailscaleStateDir/>
+</Container>
