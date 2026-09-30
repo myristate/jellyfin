@@ -59,6 +59,7 @@ namespace Jellyfin.LiveTv.TunerHosts
 
             var typeName = GetType().Name;
             Logger.LogInformation("Opening {StreamType} Live stream from {Url}", typeName, url);
+            var openTimer = System.Diagnostics.Stopwatch.StartNew();
 
             // Response stream is disposed manually.
             HttpResponseMessage response;
@@ -93,6 +94,8 @@ namespace Jellyfin.LiveTv.TunerHosts
                 throw new HttpRequestException($"The tuner refused the stream with HTTP {status} {tunerError}");
             }
 
+            Logger.LogInformation("Tuner answered {Url} in {Milliseconds} ms", url, openTimer.ElapsedMilliseconds);
+
             var taskCompletionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             _ = StartStreaming(response, taskCompletionSource, LiveStreamCancellationTokenSource.Token);
@@ -111,6 +114,11 @@ namespace Jellyfin.LiveTv.TunerHosts
                 Logger.LogWarning("No data from {Url} within {Seconds} seconds, closing the stream", url, OpenTimeout.TotalSeconds);
                 await LiveStreamCancellationTokenSource.CancelAsync().ConfigureAwait(false);
                 throw;
+            }
+
+            if (res)
+            {
+                Logger.LogInformation("First data from {Url} after {Milliseconds} ms", url, openTimer.ElapsedMilliseconds);
             }
 
             if (!res)

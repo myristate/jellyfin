@@ -96,7 +96,21 @@ namespace Jellyfin.LiveTv.TunerHosts
         {
             EnableStreamSharing = false;
 
-            Logger.LogInformation("Closing {Type}", GetType().Name);
+            long bytes = -1;
+            try
+            {
+                bytes = File.Exists(TempFilePath) ? new FileInfo(TempFilePath).Length : -1;
+            }
+            catch (IOException)
+            {
+            }
+
+            Logger.LogInformation(
+                "Closing {Type} {StreamId} after {Seconds:0.0} seconds, {Megabytes:0.0} MB buffered",
+                GetType().Name,
+                OriginalStreamId,
+                (DateTime.UtcNow - DateOpened).TotalSeconds,
+                bytes / 1048576.0);
 
             await LiveStreamCancellationTokenSource.CancelAsync().ConfigureAwait(false);
         }
@@ -119,7 +133,14 @@ namespace Jellyfin.LiveTv.TunerHosts
             {
                 try
                 {
-                    stream.Seek(GetJoinPosition(stream.Length, openFor), SeekOrigin.Begin);
+                    var length = stream.Length;
+                    var position = GetJoinPosition(length, openFor);
+                    stream.Seek(position, SeekOrigin.Begin);
+                    Logger.LogInformation(
+                        "Viewer joined live stream {StreamId} open for {Seconds:0.0} seconds, starting {Kilobytes} kB behind live",
+                        OriginalStreamId,
+                        openFor.TotalSeconds,
+                        (length - position) / 1024);
                 }
                 catch (IOException ex)
                 {
