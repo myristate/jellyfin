@@ -129,10 +129,18 @@ def main():
         tile.resize((size, size), Image.LANCZOS).save(os.path.join(OUT, 'favicons', name))
     icon.save(os.path.join(OUT, 'favicons', 'favicon.ico'), sizes=[(16, 16), (32, 32), (48, 48), (64, 64)])
 
-    # Android TV app
+    # Android TV app: home screen banner and legacy icon per density, and the in-app logo (light text, 3x)
     screenshot(tv_banner_html(320, 180), 320, 180, os.path.join(OUT, 'tv-banner.png'))
-    screenshot(tv_banner_html(640, 360), 640, 360, os.path.join(OUT, 'tv-banner@2x.png'))
+    banner = screenshot(tv_banner_html(640, 360), 640, 360, os.path.join(OUT, 'tv-banner@2x.png'))
     tile.resize((432, 432), Image.LANCZOS).save(os.path.join(OUT, 'app-icon-432.png'))
+    android = os.path.join(OUT, 'android')
+    for density, scale in (('mdpi', 1), ('hdpi', 1.5), ('xhdpi', 2), ('xxhdpi', 3), ('xxxhdpi', 4)):
+        folder = os.path.join(android, 'mipmap-' + density)
+        os.makedirs(folder, exist_ok=True)
+        banner.resize((int(160 * scale), int(90 * scale)), Image.LANCZOS).save(os.path.join(folder, 'app_banner.png'))
+        tile.resize((int(80 * scale), int(80 * scale)), Image.LANCZOS).save(os.path.join(folder, 'app_icon.png'))
+    os.makedirs(os.path.join(android, 'drawable-nodpi'), exist_ok=True)
+    screenshot(banner_html(756, 216, TEXT_LIGHT), 756, 216, os.path.join(android, 'drawable-nodpi', 'app_logo.png'))
     print('assets written to', OUT)
 
 
