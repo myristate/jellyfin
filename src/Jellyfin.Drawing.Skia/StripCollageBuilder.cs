@@ -120,6 +120,83 @@ public partial class StripCollageBuilder
         paintColor.Style = SKPaintStyle.Fill;
         canvas.DrawRect(0, 0, width, height, paintColor);
 
+        DrawLibraryName(canvas, width, height, libraryName);
+        return bitmap;
+    }
+
+    /// <summary>
+    /// Create a wall of logos, such as TV channels', each shown whole in its own cell, with the library name over
+    /// it (Finly).
+    /// </summary>
+    /// <param name="paths">The paths of the logos, in the order to use them.</param>
+    /// <param name="outputPath">The path at which to place the resulting image.</param>
+    /// <param name="width">The desired width of the image.</param>
+    /// <param name="height">The desired height of the image.</param>
+    /// <param name="libraryName">The name of the library to draw on it.</param>
+    public void BuildLogoWall(IReadOnlyList<string> paths, string outputPath, int width, int height, string? libraryName)
+    {
+        const int Columns = 4;
+        const int Rows = 3;
+
+        using var bitmap = new SKBitmap(width, height);
+        using (var canvas = new SKCanvas(bitmap))
+        {
+            using (var background = new SKPaint())
+            {
+                background.Shader = SKShader.CreateLinearGradient(
+                    new SKPoint(0, 0),
+                    new SKPoint(width, height),
+                    [new SKColor(0x1C, 0x2A, 0x3A), new SKColor(0x0B, 0x10, 0x18)],
+                    SKShaderTileMode.Clamp);
+                canvas.DrawRect(0, 0, width, height, background);
+            }
+
+            var cellWidth = width / (float)Columns;
+            var cellHeight = height / (float)Rows;
+            var padding = Math.Min(cellWidth, cellHeight) * 0.14f;
+            var imageIndex = 0;
+            for (var row = 0; row < Rows; row++)
+            {
+                for (var column = 0; column < Columns; column++)
+                {
+                    using var logo = SkiaHelper.GetNextValidImage(_skiaEncoder, paths, imageIndex, out int newIndex);
+                    // Stop once every logo is used rather than repeating them
+                    if (logo is null || newIndex <= imageIndex)
+                    {
+                        row = Rows;
+                        break;
+                    }
+
+                    imageIndex = newIndex;
+
+                    // Fit the whole logo in the cell
+                    var scale = Math.Min((cellWidth - (2 * padding)) / logo.Width, (cellHeight - (2 * padding)) / logo.Height);
+                    var logoWidth = logo.Width * scale;
+                    var logoHeight = logo.Height * scale;
+                    var left = (column * cellWidth) + ((cellWidth - logoWidth) / 2);
+                    var top = (row * cellHeight) + ((cellHeight - logoHeight) / 2);
+                    using var image = SKImage.FromBitmap(logo);
+                    canvas.DrawImage(image, SKRect.Create(left, top, logoWidth, logoHeight), SkiaEncoder.DefaultSamplingOptions);
+                }
+            }
+
+            using (var shade = new SKPaint())
+            {
+                shade.Color = SKColors.Black.WithAlpha(0x88);
+                shade.Style = SKPaintStyle.Fill;
+                canvas.DrawRect(0, 0, width, height, shade);
+            }
+
+            DrawLibraryName(canvas, width, height, libraryName);
+        }
+
+        using var outputStream = new SKFileWStream(outputPath);
+        using var pixmap = new SKPixmap(new SKImageInfo(width, height), bitmap.GetPixels());
+        pixmap.Encode(outputStream, GetEncodedFormat(outputPath), 90);
+    }
+
+    private void DrawLibraryName(SKCanvas canvas, int width, int height, string? libraryName)
+    {
         var typeFace = SkiaEncoder.DefaultTypeFace;
 
         // draw library name
@@ -140,7 +217,7 @@ public partial class StripCollageBuilder
 
         if (string.IsNullOrWhiteSpace(libraryName))
         {
-            return bitmap;
+            return;
         }
 
         var realWidth = DrawText(null, 0, (height / 2f) + (textFont.Metrics.XHeight / 2), libraryName, textPaint, textFont);
@@ -160,8 +237,6 @@ public partial class StripCollageBuilder
         {
             DrawText(canvas, padding, (height / 2f) + (textFont.Metrics.XHeight / 2), libraryName, textPaint, textFont);
         }
-
-        return bitmap;
     }
 
     private SKBitmap BuildSquareCollageBitmap(IReadOnlyList<string> paths, int width, int height)

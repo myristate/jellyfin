@@ -768,6 +768,12 @@ public class SkiaEncoder : IImageEncoder
     /// <inheritdoc/>
     public void CreateImageCollage(ImageCollageOptions options, string? libraryName)
     {
+        if (options.IsLogoWall)
+        {
+            new StripCollageBuilder(this).BuildLogoWall(options.InputPaths, options.OutputPath, options.Width, options.Height, libraryName);
+            return;
+        }
+
         double ratio = (double)options.Width / options.Height;
 
         if (ratio >= 1.4)

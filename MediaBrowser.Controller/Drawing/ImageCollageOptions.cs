@@ -31,5 +31,11 @@ namespace MediaBrowser.Controller.Drawing
         /// </summary>
         /// <value>The height.</value>
         public int Height { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether to lay the images out whole in a grid, for logos such as TV
+        /// channels', instead of cropping them (Finly).
+        /// </summary>
+        public bool IsLogoWall { get; set; }
     }
 }

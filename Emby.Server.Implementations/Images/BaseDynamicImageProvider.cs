@@ -180,7 +180,15 @@ namespace Emby.Server.Implementations.Images
             return CreateCollage(primaryItem, items, outputPath, width, height);
         }
 
-        private string CreateCollage(BaseItem primaryItem, IEnumerable<BaseItem> items, string outputPath, int width, int height)
+        /// <summary>
+        /// Creates a wall of logos, each shown whole, such as TV channels' (Finly).
+        /// </summary>
+        protected string CreateLogoWall(BaseItem primaryItem, IEnumerable<BaseItem> items, string outputPath, int width, int height)
+        {
+            return CreateCollage(primaryItem, items, outputPath, width, height, true);
+        }
+
+        private string CreateCollage(BaseItem primaryItem, IEnumerable<BaseItem> items, string outputPath, int width, int height, bool logoWall = false)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
 
@@ -189,7 +197,8 @@ namespace Emby.Server.Implementations.Images
                 Height = height,
                 Width = width,
                 OutputPath = outputPath,
-                InputPaths = GetStripCollageImagePaths(primaryItem, items).ToArray()
+                InputPaths = GetStripCollageImagePaths(primaryItem, items).ToArray(),
+                IsLogoWall = logoWall
             };
 
             if (options.InputPaths.Count == 0)

@@ -15,9 +15,11 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.IO;
+using MediaBrowser.Model.LiveTv;
 
 namespace Emby.Server.Implementations.Images
 {
@@ -34,6 +36,21 @@ namespace Emby.Server.Implementations.Images
         protected override IReadOnlyList<BaseItem> GetItemsWithImages(BaseItem item)
         {
             var view = (UserView)item;
+
+            // A random selection of the channels' logos (Finly)
+            if (view.ViewType == CollectionType.livetv)
+            {
+                var channels = BaseItem.LibraryManager.GetItemList(new InternalItemsQuery
+                {
+                    IncludeItemTypes = [BaseItemKind.LiveTvChannel],
+                    DtoOptions = new DtoOptions(false)
+                })
+                    .Where(i => i is LiveTvChannel { ChannelType: ChannelType.TV }
+                        && i.GetImageInfo(ImageType.Primary, 0)?.IsLocalFile == true)
+                    .ToList();
+                channels.Shuffle();
+                return channels;
+            }
 
             var isUsingCollectionStrip = IsUsingCollectionStrip(view);
             var recursive = isUsingCollectionStrip && view?.ViewType is not null && view.ViewType != CollectionType.boxsets && view.ViewType != CollectionType.playlists;
@@ -104,10 +121,22 @@ namespace Emby.Server.Implementations.Images
         {
             if (item is UserView view)
             {
-                return IsUsingCollectionStrip(view);
+                return IsUsingCollectionStrip(view) || view.ViewType == CollectionType.livetv;
             }
 
             return false;
+        }
+
+        /// <inheritdoc />
+        protected override bool HasChangedByDate(BaseItem item, ItemImageInfo image)
+        {
+            // A new selection of channels each day
+            if (item is UserView { ViewType: CollectionType.livetv })
+            {
+                return image.DateModified < DateTime.UtcNow.AddDays(-1) || base.HasChangedByDate(item, image);
+            }
+
+            return base.HasChangedByDate(item, image);
         }
 
         private static bool IsUsingCollectionStrip(UserView view)
@@ -130,6 +159,11 @@ namespace Emby.Server.Implementations.Images
             }
 
             var outputPath = Path.ChangeExtension(outputPathWithoutExtension, ".png");
+
+            if (item is UserView { ViewType: CollectionType.livetv })
+            {
+                return CreateLogoWall(item, itemsWithImages, outputPath, 960, 540);
+            }
 
             return CreateThumbCollage(item, itemsWithImages, outputPath, 960, 540);
         }
