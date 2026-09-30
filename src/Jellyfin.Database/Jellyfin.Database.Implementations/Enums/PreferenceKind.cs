@@ -74,5 +74,16 @@ public enum PreferenceKind
     /// The hash of the user's sign in PIN (Finly). Numbered well clear of upstream's kinds so a future upstream kind
     /// can't collide with it.
     /// </summary>
-    SignInPinHash = 1000
+    SignInPinHash = 1000,
+
+    /// <summary>
+    /// Items the user removed from their own library, or a parent removed for them (Finly). Hides the item and
+    /// everything below it, such as the episodes of a series.
+    /// </summary>
+    HiddenItems = 1001,
+
+    /// <summary>
+    /// The id of the profile level the user is on, such as Child or Adult (Finly).
+    /// </summary>
+    ProfileLevel = 1002
 }

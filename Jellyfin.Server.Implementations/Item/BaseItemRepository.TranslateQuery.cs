@@ -1133,6 +1133,8 @@ public sealed partial class BaseItemRepository
                 .Where(e => e.SeriesPresentationUniqueKey == filter.SeriesPresentationUniqueKey);
         }
 
+        baseQuery = ExcludeHiddenItems(context, baseQuery, filter);
+
         // Pre-build the blocked-item-id set as a sub-select
         if (filter.ExcludeInheritedTags.Length > 0)
         {

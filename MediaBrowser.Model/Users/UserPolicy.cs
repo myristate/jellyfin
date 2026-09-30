@@ -119,6 +119,12 @@ namespace MediaBrowser.Model.Users
 
         public bool EnableUserPreferenceAccess { get; set; }
 
+        /// <summary>
+        /// Gets or sets the id of the profile level the user is on (Finly). Left unchanged when a client that doesn't
+        /// know it sends none, <see cref="Guid.Empty"/> takes the user off their level.
+        /// </summary>
+        public Guid? ProfileLevelId { get; set; }
+
         public AccessSchedule[] AccessSchedules { get; set; }
 
         public UnratedItem[] BlockUnratedItems { get; set; }

@@ -46,6 +46,7 @@ public class UserController : BaseJellyfinApiController
     private readonly ILogger _logger;
     private readonly IQuickConnect _quickConnectManager;
     private readonly IPlaylistManager _playlistManager;
+    private readonly IProfileLevelStore _profileLevels;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="UserController"/> class.
@@ -59,6 +60,7 @@ public class UserController : BaseJellyfinApiController
     /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
     /// <param name="quickConnectManager">Instance of the <see cref="IQuickConnect"/> interface.</param>
     /// <param name="playlistManager">Instance of the <see cref="IPlaylistManager"/> interface.</param>
+    /// <param name="profileLevels">Instance of the <see cref="IProfileLevelStore"/> interface.</param>
     public UserController(
         IUserManager userManager,
         ISessionManager sessionManager,
@@ -68,7 +70,8 @@ public class UserController : BaseJellyfinApiController
         IServerConfigurationManager config,
         ILogger<UserController> logger,
         IQuickConnect quickConnectManager,
-        IPlaylistManager playlistManager)
+        IPlaylistManager playlistManager,
+        IProfileLevelStore profileLevels)
     {
         _userManager = userManager;
         _sessionManager = sessionManager;
@@ -79,6 +82,7 @@ public class UserController : BaseJellyfinApiController
         _logger = logger;
         _quickConnectManager = quickConnectManager;
         _playlistManager = playlistManager;
+        _profileLevels = profileLevels;
     }
 
     /// <summary>
@@ -488,6 +492,13 @@ public class UserController : BaseJellyfinApiController
             {
                 return StatusCode(StatusCodes.Status403Forbidden, "There must be at least one user in the system with administrative access.");
             }
+        }
+
+        // A profile on a level has the level's restrictions
+        var levelId = newPolicy.ProfileLevelId ?? user.GetProfileLevelId();
+        if (levelId.HasValue && !levelId.Value.Equals(Guid.Empty))
+        {
+            _profileLevels.GetLevel(levelId.Value)?.ApplyTo(newPolicy);
         }
 
         // There must always be an administrator with a password

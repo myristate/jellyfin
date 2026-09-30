@@ -57,7 +57,8 @@ public class UserControllerTests
             _mockServerConfigurationManager.Object,
             _mockLogger.Object,
             _mockQuickConnect.Object,
-            _mockPlaylistManager.Object);
+            _mockPlaylistManager.Object,
+            new Mock<IProfileLevelStore>().Object);
     }
 
     [Theory]

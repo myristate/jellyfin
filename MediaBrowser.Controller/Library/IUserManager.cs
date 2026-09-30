@@ -112,6 +112,16 @@ namespace MediaBrowser.Controller.Library
         Task SetPinAsync(Guid userId, string? pin);
 
         /// <summary>
+        /// Removes an item from the user's library, or puts it back. A removed item and everything below it, such as
+        /// the episodes of a series, no longer shows up for the user anywhere.
+        /// </summary>
+        /// <param name="userId">The user id.</param>
+        /// <param name="itemId">The item id.</param>
+        /// <param name="hidden">Whether the item is removed.</param>
+        /// <returns>A task representing the change.</returns>
+        Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden);
+
+        /// <summary>
         /// Resets the password.
         /// </summary>
         /// <param name="userId">The users Id.</param>

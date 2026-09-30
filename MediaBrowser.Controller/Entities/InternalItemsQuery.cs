@@ -33,6 +33,7 @@ namespace MediaBrowser.Controller.Entities
             ExcludeInheritedTags = [];
             IncludeInheritedTags = [];
             ExcludeItemIds = [];
+            HiddenItemIds = [];
             ExcludeItemTypes = [];
             ExcludeTags = [];
             GenreIds = [];
@@ -248,6 +249,12 @@ namespace MediaBrowser.Controller.Entities
         public ExtraType[] ExtraTypes { get; set; }
 
         public Guid[] ExcludeItemIds { get; set; }
+
+        /// <summary>
+        /// Gets or sets the items the user removed from their library. Unlike <see cref="ExcludeItemIds"/> everything
+        /// below them is hidden too, such as the episodes of a series.
+        /// </summary>
+        public Guid[] HiddenItemIds { get; set; }
 
         public Guid? AdjacentTo { get; set; }
 
@@ -546,6 +553,8 @@ namespace MediaBrowser.Controller.Entities
                 .Where(tag => !string.IsNullOrWhiteSpace(tag))
                 .Select(tag => tag.RemoveDiacritics().ToLowerInvariant())
                 .ToArray();
+
+            HiddenItemIds = user.GetPreferenceValues<Guid>(PreferenceKind.HiddenItems);
 
             UserHasContentRestrictions = user.HasContentRestrictions();
             User = user;

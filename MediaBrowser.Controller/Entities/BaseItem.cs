@@ -1867,6 +1867,11 @@ namespace MediaBrowser.Controller.Entities
         {
             ArgumentNullException.ThrowIfNull(user);
 
+            if (IsHiddenBy(user))
+            {
+                return false;
+            }
+
             if (!IsVisibleViaTags(user, skipAllowedTagsCheck))
             {
                 return false;
@@ -1912,6 +1917,22 @@ namespace MediaBrowser.Controller.Entities
             }
 
             return !maxAllowedSubRating.HasValue || (ratingScore.SubScore ?? 0) <= maxAllowedSubRating.Value;
+        }
+
+        /// <summary>
+        /// Checks whether the user removed this item, or one it belongs to such as its series, from their library.
+        /// </summary>
+        /// <param name="user">The user.</param>
+        /// <returns><c>true</c> when the item is hidden from the user.</returns>
+        public bool IsHiddenBy(User user)
+        {
+            var hidden = user.GetPreferenceValues<Guid>(PreferenceKind.HiddenItems);
+            if (hidden.Length == 0)
+            {
+                return false;
+            }
+
+            return hidden.Contains(Id) || GetParents().Any(parent => hidden.Contains(parent.Id));
         }
 
         public ParentalRatingScore GetParentalRatingScore()

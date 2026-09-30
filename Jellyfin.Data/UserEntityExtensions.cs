@@ -176,7 +176,19 @@ public static class UserEntityExtensions
             || entity.MaxParentalRatingScore.HasValue
             || entity.GetPreference(PreferenceKind.BlockedTags).Length > 0
             || entity.GetPreference(PreferenceKind.AllowedTags).Length > 0
-            || entity.GetPreference(PreferenceKind.BlockUnratedItems).Length > 0;
+            || entity.GetPreference(PreferenceKind.BlockUnratedItems).Length > 0
+            || entity.GetPreference(PreferenceKind.HiddenItems).Length > 0;
+    }
+
+    /// <summary>
+    /// Gets the id of the profile level the user is on (Finly).
+    /// </summary>
+    /// <param name="entity">The user.</param>
+    /// <returns>The level id, or <c>null</c> when the user isn't on a level.</returns>
+    public static Guid? GetProfileLevelId(this User entity)
+    {
+        var value = entity.GetPreference(PreferenceKind.ProfileLevel).FirstOrDefault();
+        return Guid.TryParse(value, out var id) && !id.Equals(Guid.Empty) ? id : null;
     }
 
     /// <summary>

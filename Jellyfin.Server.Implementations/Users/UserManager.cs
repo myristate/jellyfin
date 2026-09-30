@@ -459,6 +459,43 @@ namespace Jellyfin.Server.Implementations.Users
         }
 
         /// <inheritdoc/>
+        public async Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden)
+        {
+            using (await _userLock.LockAsync(userId).ConfigureAwait(false))
+            {
+                var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+                await using (dbContext.ConfigureAwait(false))
+                {
+                    var user = await UserQuery(dbContext)
+                        .AsTracking()
+                        .FirstOrDefaultAsync(u => u.Id == userId)
+                        .ConfigureAwait(false)
+                        ?? throw new ResourceNotFoundException(nameof(userId));
+
+                    var items = user.GetPreferenceValues<Guid>(PreferenceKind.HiddenItems).ToList();
+                    if (hidden == items.Contains(itemId))
+                    {
+                        return;
+                    }
+
+                    if (hidden)
+                    {
+                        items.Add(itemId);
+                    }
+                    else
+                    {
+                        items.Remove(itemId);
+                    }
+
+                    user.SetPreference(PreferenceKind.HiddenItems, items.ToArray());
+                    await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                }
+            }
+
+            _logger.LogInformation("Item {ItemId} {Action} the library of user {UserId}", itemId, hidden ? "removed from" : "put back in", userId);
+        }
+
+        /// <inheritdoc/>
         public Task ResetPassword(Guid userId)
         {
             return ChangePassword(userId, string.Empty);
@@ -538,6 +575,7 @@ namespace Jellyfin.Server.Implementations.Users
                     MaxParentalRating = user.MaxParentalRatingScore,
                     MaxParentalSubRating = user.MaxParentalRatingSubScore,
                     EnableUserPreferenceAccess = user.EnableUserPreferenceAccess,
+                    ProfileLevelId = user.GetProfileLevelId(),
                     RemoteClientBitrateLimit = user.RemoteClientBitrateLimit ?? 0,
                     AuthenticationProviderId = user.AuthenticationProviderId,
                     PasswordResetProviderId = user.PasswordResetProviderId,
@@ -960,6 +998,12 @@ namespace Jellyfin.Server.Implementations.Users
                     user.MaxParentalRatingScore = policy.MaxParentalRating;
                     user.MaxParentalRatingSubScore = policy.MaxParentalSubRating;
                     user.EnableUserPreferenceAccess = policy.EnableUserPreferenceAccess;
+                    if (policy.ProfileLevelId.HasValue)
+                    {
+                        user.SetPreference(
+                            PreferenceKind.ProfileLevel,
+                            policy.ProfileLevelId.Value.Equals(Guid.Empty) ? Array.Empty<string>() : [policy.ProfileLevelId.Value.ToString("N", CultureInfo.InvariantCulture)]);
+                    }
                     user.RemoteClientBitrateLimit = policy.RemoteClientBitrateLimit;
                     user.AuthenticationProviderId = policy.AuthenticationProviderId;
                     user.PasswordResetProviderId = policy.PasswordResetProviderId;

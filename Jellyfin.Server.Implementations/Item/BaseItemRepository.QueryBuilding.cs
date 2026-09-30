@@ -448,6 +448,7 @@ public sealed partial class BaseItemRepository
     private static bool RequiresParentalRestrictions(InternalItemsQuery filter)
         => filter.IncludeInheritedTags.Length > 0
             || filter.ExcludeInheritedTags.Length > 0
+            || filter.HiddenItemIds.Length > 0
             || filter.MaxParentalRating is not null
             || filter.BlockUnratedItems.Length > 0;
 
@@ -603,6 +604,8 @@ public sealed partial class BaseItemRepository
                 e.InheritedParentalRatingValue != null || !unratedItemTypes.Contains(e.UnratedType));
         }
 
+        baseQuery = ExcludeHiddenItems(context, baseQuery, filter);
+
         // Apply excluded tags filtering (blocked tags).
         // Pre-build the blocked-item-id set as a sub-select; then four index-seek Contains checks
         // instead of one EXISTS over a 4-way OR predicate that defeats index seeks.
@@ -648,6 +651,33 @@ public sealed partial class BaseItemRepository
         }
 
         return baseQuery;
+    }
+
+    /// <summary>
+    /// Leaves out the items the user removed from their library, and everything below them.
+    /// </summary>
+    /// <param name="context">The database context.</param>
+    /// <param name="baseQuery">The query to filter.</param>
+    /// <param name="filter">The query filter, with the user's hidden items.</param>
+    /// <returns>The filtered query.</returns>
+    private static IQueryable<BaseItemEntity> ExcludeHiddenItems(
+        JellyfinDbContext context,
+        IQueryable<BaseItemEntity> baseQuery,
+        InternalItemsQuery filter)
+    {
+        if (filter.HiddenItemIds.Length == 0)
+        {
+            return baseQuery;
+        }
+
+        var hiddenIds = filter.HiddenItemIds;
+        var hiddenItems = context.BaseItems.Where(b => hiddenIds.Contains(b.Id)).Select(b => b.Id);
+        var belowHidden = ItemsBelowTaggedAncestor(context, hiddenItems);
+
+        return baseQuery.Where(e =>
+            !hiddenIds.Contains(e.Id)
+            && !(e.SeriesId.HasValue && hiddenIds.Contains(e.SeriesId.Value))
+            && !belowHidden.Contains(e.Id));
     }
 
     /// <summary>
