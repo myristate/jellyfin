@@ -679,8 +679,10 @@ namespace Emby.Server.Implementations.Library
                     // hack - these two values were taken from LiveTVMediaSourceProvider
                     string cacheKey = request.OpenToken;
 
+                    // No fixed wait before probing: the probe reads the live data as it arrives, and the wait added
+                    // 3 seconds to every first tune of a channel
                     await new LiveStreamHelper(_mediaEncoder, _logger, _appPaths)
-                        .AddMediaInfoWithProbe(mediaSource, false, cacheKey, true, cancellationToken)
+                        .AddMediaInfoWithProbe(mediaSource, false, cacheKey, false, cancellationToken)
                         .ConfigureAwait(false);
                 }
             }

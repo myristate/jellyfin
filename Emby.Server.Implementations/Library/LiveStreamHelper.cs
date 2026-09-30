@@ -28,6 +28,11 @@ namespace Emby.Server.Implementations.Library
         private readonly IApplicationPaths _appPaths;
         private readonly JsonSerializerOptions _jsonOptions = JsonDefaults.Options;
 
+        /// <summary>
+        /// How much of a live stream to read when probing it, in milliseconds.
+        /// </summary>
+        private const int LiveProbeAnalyzeDurationMs = 1500;
+
         public LiveStreamHelper(IMediaEncoder mediaEncoder, ILogger logger, IApplicationPaths appPaths)
         {
             _mediaEncoder = mediaEncoder;
@@ -53,8 +58,10 @@ namespace Emby.Server.Implementations.Library
                     await using (jsonStream.ConfigureAwait(false))
                     {
                         mediaInfo = await JsonSerializer.DeserializeAsync<MediaInfo>(jsonStream, _jsonOptions, cancellationToken).ConfigureAwait(false);
-                        // _logger.LogDebug("Found cached media info");
                     }
+
+                    // Keep channels that are in use out of the cache cleanup, which removes files not written for 30 days
+                    File.SetLastWriteTimeUtc(cacheFilePath, now);
                 }
                 catch (IOException ex)
                 {
@@ -76,7 +83,9 @@ namespace Emby.Server.Implementations.Library
                     await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
                 }
 
-                mediaSource.AnalyzeDurationMs = 3000;
+                // SD channels repeat their MPEG-2 sequence header every half second and HD channels send a key frame
+                // about every second, so 1.5 seconds of stream is enough to find every stream and its format
+                mediaSource.AnalyzeDurationMs = LiveProbeAnalyzeDurationMs;
 
                 mediaInfo = await _mediaEncoder.GetMediaInfo(
                     new MediaInfoRequest
@@ -87,10 +96,17 @@ namespace Emby.Server.Implementations.Library
                     },
                     cancellationToken).ConfigureAwait(false);
 
-                if (cacheFilePath is not null)
+                // A video stream without a codec is a stream that sent no data during the probe, for example a channel
+                // that is off air and only broadcasting sound. Treat it as missing rather than as unplayable video.
+                mediaInfo.MediaStreams = mediaInfo.MediaStreams
+                    .Where(i => i.Type != MediaStreamType.Video || !string.IsNullOrEmpty(i.Codec))
+                    .ToList();
+
+                if (cacheFilePath is not null && mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Video))
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(cacheFilePath) ?? throw new InvalidOperationException("Path can't be a root directory."));
-                    FileStream createStream = AsyncFile.OpenWrite(cacheFilePath);
+                    // Create truncates, a shorter result written over a longer one would leave a corrupt file behind
+                    FileStream createStream = AsyncFile.Create(cacheFilePath);
                     await using (createStream.ConfigureAwait(false))
                     {
                         await JsonSerializer.SerializeAsync(createStream, mediaInfo, _jsonOptions, cancellationToken).ConfigureAwait(false);
