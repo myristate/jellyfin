@@ -431,6 +431,11 @@ namespace MediaBrowser.MediaEncoding.Encoder
                 cancellationToken);
         }
 
+        /// <summary>
+        /// The probe size for live streams.
+        /// </summary>
+        internal const string LiveStreamProbeSize = "10M";
+
         internal string GetExtraArguments(MediaInfoRequest request)
         {
             var ffmpegAnalyzeDuration = _config.GetFFmpegAnalyzeDuration() ?? string.Empty;
@@ -452,7 +457,14 @@ namespace MediaBrowser.MediaEncoding.Encoder
                 extraArgs = analyzeDuration;
             }
 
-            if (!string.IsNullOrEmpty(ffmpegProbeSize))
+            // A live stream never ends, so with the large probe size used for files (1G by default) a stream ffprobe can't
+            // fully identify within the analyze duration, such as a silent audio description track, is read for many
+            // minutes. Cap live streams at a few seconds of even a high bitrate channel.
+            if (request.MediaSource.IsInfiniteStream)
+            {
+                extraArgs += " -probesize " + LiveStreamProbeSize;
+            }
+            else if (!string.IsNullOrEmpty(ffmpegProbeSize))
             {
                 extraArgs += " -probesize " + ffmpegProbeSize;
             }

@@ -1305,7 +1305,7 @@ namespace MediaBrowser.Controller.MediaEncoding
                 }
 
                 // Apply probesize, too, if configured
-                var ffmpegProbeSizeArgument = GetFfmpegProbesizeArg();
+                var ffmpegProbeSizeArgument = GetFfmpegProbesizeArg(state);
                 if (!string.IsNullOrEmpty(ffmpegProbeSizeArgument))
                 {
                     arg.Append(' ').Append(ffmpegProbeSizeArgument);
@@ -7305,8 +7305,15 @@ namespace MediaBrowser.Controller.MediaEncoding
             return analyzeDurationArgument;
         }
 
-        private string GetFfmpegProbesizeArg()
+        private string GetFfmpegProbesizeArg(EncodingJobInfo state)
         {
+            // A live stream never ends: with the large probe size used for files (1G by default) ffmpeg can read a live
+            // input for minutes before the transcode starts when a stream in it can't be fully identified
+            if (state.MediaSource?.IsInfiniteStream == true)
+            {
+                return "-probesize 10M";
+            }
+
             var ffmpegProbeSize = _config.GetFFmpegProbeSize();
 
             if (!string.IsNullOrEmpty(ffmpegProbeSize))
@@ -7330,7 +7337,7 @@ namespace MediaBrowser.Controller.MediaEncoding
             inputModifier = inputModifier.Trim();
 
             // Apply -probesize if configured
-            var ffmpegProbeSizeArgument = GetFfmpegProbesizeArg();
+            var ffmpegProbeSizeArgument = GetFfmpegProbesizeArg(state);
 
             if (!string.IsNullOrEmpty(ffmpegProbeSizeArgument))
             {
