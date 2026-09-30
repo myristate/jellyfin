@@ -48,6 +48,17 @@ public interface ITranscodeManager
     public Task KillTranscodingJobs(string deviceId, string? playSessionId, Func<string, bool> deleteFiles);
 
     /// <summary>
+    /// Kills the transcoding jobs, and closes their live streams if asked (Finly).
+    /// </summary>
+    /// <param name="deviceId">The device id.</param>
+    /// <param name="playSessionId">The play session identifier.</param>
+    /// <param name="deleteFiles">The delete files.</param>
+    /// <param name="closeLiveStreams">Whether to close the jobs' live streams too.</param>
+    /// <returns>Task.</returns>
+    public Task KillTranscodingJobs(string deviceId, string? playSessionId, Func<string, bool> deleteFiles, bool closeLiveStreams)
+        => KillTranscodingJobs(deviceId, playSessionId, deleteFiles);
+
+    /// <summary>
     /// Report the transcoding progress to the session manager.
     /// </summary>
     /// <param name="job">The <see cref="TranscodingJob"/> of which the progress will be reported.</param>

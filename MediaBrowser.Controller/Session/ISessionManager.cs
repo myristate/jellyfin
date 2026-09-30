@@ -356,6 +356,17 @@ namespace MediaBrowser.Controller.Session
         Task CloseLiveStreamIfNeededAsync(string liveStreamId, string sessionIdOrPlaySessionId);
 
         /// <summary>
+        /// Used to close the livestream if needed (Finly).
+        /// </summary>
+        /// <param name="liveStreamId">The livestream id.</param>
+        /// <param name="sessionIdOrPlaySessionId">The session id or playsession id.</param>
+        /// <param name="immediately">Whether to close a stream nobody else uses straight away, rather than after a grace
+        /// period, for example because its viewer has gone.</param>
+        /// <returns>Task.</returns>
+        Task CloseLiveStreamIfNeededAsync(string liveStreamId, string sessionIdOrPlaySessionId, bool immediately)
+            => CloseLiveStreamIfNeededAsync(liveStreamId, sessionIdOrPlaySessionId);
+
+        /// <summary>
         /// Gets the dto for session info.
         /// </summary>
         /// <param name="sessionInfo">The session info.</param>

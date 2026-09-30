@@ -22,6 +22,7 @@ using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Session;
 using MediaBrowser.Controller.Streaming;
 using MediaBrowser.Model.Dlna;
+using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.IO;
 using MediaBrowser.Model.MediaInfo;
@@ -53,6 +54,11 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
     });
 
     private readonly Version _maxFFmpegCkeyPauseSupported = new Version(6, 1);
+
+    /// <summary>
+    /// How long an HLS viewer of a live channel may go without checking in before it is taken to have gone (Finly).
+    /// </summary>
+    internal const int LiveHlsPingTimeoutMs = 25000;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TranscodeManager"/> class.
@@ -149,14 +155,7 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
             return;
         }
 
-        var timerDuration = 10000;
-
-        if (job.Type != TranscodingJobType.Progressive)
-        {
-            timerDuration = 60000;
-        }
-
-        job.PingTimeout = timerDuration;
+        job.PingTimeout = GetPingTimeoutMs(job);
         job.LastPingDate = DateTime.UtcNow;
 
         // Don't start the timer for playback checkins with progressive streaming
@@ -168,6 +167,23 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
         {
             job.ChangeKillTimerIfStarted();
         }
+    }
+
+    /// <summary>
+    /// Gets how long a job may go without its client checking in before it is stopped.
+    /// </summary>
+    /// <param name="job">The job.</param>
+    /// <returns>The time in milliseconds.</returns>
+    internal static int GetPingTimeoutMs(TranscodingJob job)
+    {
+        if (job.Type == TranscodingJobType.Progressive)
+        {
+            return 10000;
+        }
+
+        // (Finly) A live channel's viewer checks in every few seconds, so one silent for 25 seconds has gone and the
+        // tuner is released sooner
+        return job.MediaSource?.IsInfiniteStream == true ? LiveHlsPingTimeoutMs : 60000;
     }
 
     private async void OnTranscodeKillTimerStopped(object? state)
@@ -186,11 +202,16 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
 
         _logger.LogInformation("Transcoding kill timer stopped for JobId {0} PlaySessionId {1}. Killing transcoding", job.Id, job.PlaySessionId);
 
-        await KillTranscodingJob(job, true, path => true).ConfigureAwait(false);
+        // (Finly) The viewer has gone, so there is nobody to come back within the grace period: close the live stream now
+        await KillTranscodingJob(job, true, path => true, true).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public Task KillTranscodingJobs(string deviceId, string? playSessionId, Func<string, bool> deleteFiles)
+        => KillTranscodingJobs(deviceId, playSessionId, deleteFiles, false);
+
+    /// <inheritdoc />
+    public Task KillTranscodingJobs(string deviceId, string? playSessionId, Func<string, bool> deleteFiles, bool closeLiveStreams)
     {
         var jobs = new List<TranscodingJob>();
 
@@ -209,12 +230,12 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
         {
             foreach (var job in jobs)
             {
-                yield return KillTranscodingJob(job, false, deleteFiles);
+                yield return KillTranscodingJob(job, closeLiveStreams, deleteFiles);
             }
         }
     }
 
-    private async Task KillTranscodingJob(TranscodingJob job, bool closeLiveStream, Func<string, bool> delete)
+    private async Task KillTranscodingJob(TranscodingJob job, bool closeLiveStream, Func<string, bool> delete, bool closeLiveStreamImmediately = false)
     {
         job.DisposeKillTimer();
 
@@ -241,7 +262,7 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
 
         if (closeLiveStream && !string.IsNullOrWhiteSpace(job.LiveStreamId))
         {
-            await _sessionManager.CloseLiveStreamIfNeededAsync(job.LiveStreamId, job.PlaySessionId).ConfigureAwait(false);
+            await _sessionManager.CloseLiveStreamIfNeededAsync(job.LiveStreamId, job.PlaySessionId, closeLiveStreamImmediately).ConfigureAwait(false);
         }
     }
 
@@ -379,8 +400,37 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
         var directory = Path.GetDirectoryName(outputPath) ?? throw new ArgumentException($"Provided path ({outputPath}) is not valid.", nameof(outputPath));
         Directory.CreateDirectory(directory);
 
-        await AcquireResources(state, cancellationTokenSource).ConfigureAwait(false);
+        // (Finly) A live stream opened here is closed again if the transcode doesn't start, so it doesn't hold the tuner
+        var openedLiveStreamId = await AcquireResources(state, cancellationTokenSource).ConfigureAwait(false);
+        try
+        {
+            return await StartFfMpegProcess(state, outputPath, commandLineArguments, userId, transcodingJobType, cancellationTokenSource, workingDirectory).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (openedLiveStreamId is not null)
+        {
+            _logger.LogWarning("Transcoding didn't start ({Message}), closing live stream {LiveStreamId}", ex.Message, openedLiveStreamId);
+            try
+            {
+                await _mediaSourceManager.CloseLiveStream(openedLiveStreamId, true).ConfigureAwait(false);
+            }
+            catch (Exception closeEx)
+            {
+                _logger.LogError(closeEx, "Error closing live stream {LiveStreamId}", openedLiveStreamId);
+            }
 
+            throw;
+        }
+    }
+
+    private async Task<TranscodingJob> StartFfMpegProcess(
+        StreamState state,
+        string outputPath,
+        string commandLineArguments,
+        Guid userId,
+        TranscodingJobType transcodingJobType,
+        CancellationTokenSource cancellationTokenSource,
+        string? workingDirectory)
+    {
         if (state.VideoRequest is not null && !EncodingHelper.IsCopyCodec(state.OutputVideoCodec))
         {
             var user = userId.IsEmpty() ? null : _userManager.GetUserById(userId);
@@ -474,26 +524,28 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
             IODefaults.FileStreamBufferSize,
             FileOptions.Asynchronous);
 
-        await JsonSerializer.SerializeAsync(logStream, state.MediaSource, cancellationToken: cancellationTokenSource.Token).ConfigureAwait(false);
-        var commandLineLogMessageBytes = Encoding.UTF8.GetBytes(
-            Environment.NewLine
-            + Environment.NewLine
-            + process.StartInfo.FileName + " " + process.StartInfo.Arguments
-            + Environment.NewLine
-            + Environment.NewLine);
-
-        await logStream.WriteAsync(commandLineLogMessageBytes, cancellationTokenSource.Token).ConfigureAwait(false);
-
-        process.Exited += (_, _) => OnFfMpegProcessExited(process, transcodingJob, state);
-
         try
         {
+            await JsonSerializer.SerializeAsync(logStream, state.MediaSource, cancellationToken: cancellationTokenSource.Token).ConfigureAwait(false);
+            var commandLineLogMessageBytes = Encoding.UTF8.GetBytes(
+                Environment.NewLine
+                + Environment.NewLine
+                + process.StartInfo.FileName + " " + process.StartInfo.Arguments
+                + Environment.NewLine
+                + Environment.NewLine);
+
+            await logStream.WriteAsync(commandLineLogMessageBytes, cancellationTokenSource.Token).ConfigureAwait(false);
+
+            process.Exited += (_, _) => OnFfMpegProcessExited(process, transcodingJob, state);
+
             process.Start();
         }
         catch (Exception ex)
         {
+            // (Finly) The log failing to be written is a failure to start as well: don't leave the job behind
             _logger.LogError(ex, "Error starting FFmpeg");
             OnTranscodeFailedToStart(outputPath, transcodingJobType, state);
+            await logStream.DisposeAsync().ConfigureAwait(false);
 
             throw;
         }
@@ -659,28 +711,50 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
         job.Dispose();
     }
 
-    private async Task AcquireResources(StreamState state, CancellationTokenSource cancellationTokenSource)
+    /// <summary>
+    /// Opens the live stream the transcode needs, if any, and waits for its buffer.
+    /// </summary>
+    /// <returns>The id of the live stream opened here (Finly), or <c>null</c>.</returns>
+    private async Task<string?> AcquireResources(StreamState state, CancellationTokenSource cancellationTokenSource)
     {
+        MediaSourceInfo? openedMediaSource = null;
         if (state.MediaSource.RequiresOpening && string.IsNullOrWhiteSpace(state.Request.LiveStreamId))
         {
             var liveStreamResponse = await _mediaSourceManager.OpenLiveStream(
                     new LiveStreamRequest { OpenToken = state.MediaSource.OpenToken },
                     cancellationTokenSource.Token)
                 .ConfigureAwait(false);
-            var encodingOptions = _serverConfigurationManager.GetEncodingOptions();
+            openedMediaSource = liveStreamResponse.MediaSource;
+        }
 
-            _encodingHelper.AttachMediaSourceInfo(state, encodingOptions, liveStreamResponse.MediaSource, state.RequestedUrl);
-
-            if (state.VideoRequest is not null)
+        var openedLiveStreamId = openedMediaSource?.LiveStreamId;
+        try
+        {
+            if (openedMediaSource is not null)
             {
-                _encodingHelper.TryStreamCopy(state, encodingOptions);
+                var encodingOptions = _serverConfigurationManager.GetEncodingOptions();
+
+                _encodingHelper.AttachMediaSourceInfo(state, encodingOptions, openedMediaSource, state.RequestedUrl);
+
+                if (state.VideoRequest is not null)
+                {
+                    _encodingHelper.TryStreamCopy(state, encodingOptions);
+                }
+            }
+
+            if (state.MediaSource.BufferMs.HasValue)
+            {
+                await Task.Delay(state.MediaSource.BufferMs.Value, cancellationTokenSource.Token).ConfigureAwait(false);
             }
         }
-
-        if (state.MediaSource.BufferMs.HasValue)
+        catch when (!string.IsNullOrEmpty(openedLiveStreamId))
         {
-            await Task.Delay(state.MediaSource.BufferMs.Value, cancellationTokenSource.Token).ConfigureAwait(false);
+            // (Finly) Don't keep the tuner for a transcode that won't happen
+            await _mediaSourceManager.CloseLiveStream(openedLiveStreamId, true).ConfigureAwait(false);
+            throw;
         }
+
+        return openedLiveStreamId;
     }
 
     /// <inheritdoc />
