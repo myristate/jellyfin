@@ -11,6 +11,11 @@ namespace Jellyfin.LiveTv.TunerHosts
     /// </summary>
     public partial class LiveStream
     {
+        /// <summary>
+        /// How long a stream must have run before its bitrate is measured, a moment after it starts is misleading.
+        /// </summary>
+        private static readonly TimeSpan MinimumMeasuringTime = TimeSpan.FromSeconds(2);
+
         private readonly Lock _readersLock = new();
         private int _activeReaders;
         private DateTime _lastReaderLeftUtc = DateTime.UtcNow;
@@ -52,6 +57,22 @@ namespace Jellyfin.LiveTv.TunerHosts
 
                 _noNewReaders = true;
                 return true;
+            }
+        }
+
+        /// <inheritdoc />
+        public int? MeasuredBitrate
+        {
+            get
+            {
+                var elapsed = DateTime.UtcNow - DateOpened;
+                if (DateOpened == default || elapsed < MinimumMeasuringTime)
+                {
+                    return null;
+                }
+
+                var bytes = BytesBuffered;
+                return bytes > 0 ? (int)Math.Min(bytes * 8 / elapsed.TotalSeconds, int.MaxValue) : null;
             }
         }
 

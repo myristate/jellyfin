@@ -87,6 +87,24 @@ namespace Jellyfin.LiveTv.TunerHosts
 
         private const int TsPacketSize = 188;
 
+        /// <summary>
+        /// Gets how many bytes have been received from the tuner (Finly).
+        /// </summary>
+        protected virtual long BytesBuffered
+        {
+            get
+            {
+                try
+                {
+                    return File.Exists(TempFilePath) ? new FileInfo(TempFilePath).Length : 0;
+                }
+                catch (IOException)
+                {
+                    return 0;
+                }
+            }
+        }
+
         protected void SetTempFilePath(string extension)
         {
             TempFilePath = Path.Combine(_configurationManager.GetTranscodePath(), UniqueId + "." + extension);

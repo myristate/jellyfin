@@ -49,5 +49,11 @@ namespace MediaBrowser.Controller.Library
         /// <param name="minimumUnreadTime">How long nobody must have been reading it.</param>
         /// <returns>Whether new readers were stopped, so the stream may be closed.</returns>
         bool TryStopNewReaders(TimeSpan minimumUnreadTime) => false;
+
+        /// <summary>
+        /// Gets the bitrate the stream has been received at, in bits per second, once it has run long enough to tell
+        /// (Finly).
+        /// </summary>
+        int? MeasuredBitrate => null;
     }
 }

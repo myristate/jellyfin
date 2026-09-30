@@ -205,6 +205,9 @@ public static class StreamingHelpers
 
             encodingHelper.TryStreamCopy(state, encodingOptions);
 
+            // (Finly) Don't transcode a live channel at many times its own bitrate
+            CapLiveTvBitrate(state, mediaSource, streamingRequest.VideoBitRate, mediaSourceManager);
+
             if (!EncodingHelper.IsCopyCodec(state.OutputVideoCodec) && state.OutputVideoBitrate.HasValue)
             {
                 var isVideoResolutionNotRequested = !state.VideoRequest.Width.HasValue
@@ -383,6 +386,29 @@ public static class StreamingHelpers
         var folder = serverConfigurationManager.GetTranscodePath();
 
         return Path.Combine(folder, filename + ext);
+    }
+
+    /// <summary>
+    /// Caps the bitrate a live channel's video is transcoded at (Finly), see <see cref="LiveTvBitrateCap"/>. A channel
+    /// whose video is copied is left alone.
+    /// </summary>
+    /// <param name="state">The stream state.</param>
+    /// <param name="mediaSource">The media source.</param>
+    /// <param name="requestedVideoBitrate">The video bitrate the client asked for.</param>
+    /// <param name="mediaSourceManager">The media source manager, to measure the live stream.</param>
+    internal static void CapLiveTvBitrate(StreamState state, MediaSourceInfo? mediaSource, int? requestedVideoBitrate, IMediaSourceManager mediaSourceManager)
+    {
+        if (mediaSource?.IsInfiniteStream != true
+            || state.VideoStream is null
+            || EncodingHelper.IsCopyCodec(state.OutputVideoCodec))
+        {
+            return;
+        }
+
+        var liveStream = string.IsNullOrEmpty(mediaSource.LiveStreamId) ? null : mediaSourceManager.GetLiveStreamInfo(mediaSource.LiveStreamId);
+        var sourceBitrate = LiveTvBitrateCap.EstimateSourceVideoBitrate(liveStream?.MeasuredBitrate, state.AudioStream?.BitRate, state.VideoStream);
+        var cap = LiveTvBitrateCap.GetCap(sourceBitrate, LiveTvBitrateCap.IsSd(state.VideoStream));
+        state.OutputVideoBitrate = LiveTvBitrateCap.Apply(state.OutputVideoBitrate, requestedVideoBitrate, cap);
     }
 
     /// <summary>
