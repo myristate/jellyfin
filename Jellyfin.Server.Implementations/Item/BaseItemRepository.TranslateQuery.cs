@@ -1140,11 +1140,12 @@ public sealed partial class BaseItemRepository
             var blockedTagItemIds = context.ItemValuesMap
                 .Where(f => f.ItemValue.Type == ItemValueType.Tags && excludedTags.Contains(f.ItemValue.CleanValue))
                 .Select(f => f.ItemId);
+            var blockedByAncestor = ItemsBelowTaggedAncestor(context, blockedTagItemIds);
 
             baseQuery = baseQuery.Where(e =>
                 !blockedTagItemIds.Contains(e.Id)
                 && !(e.SeriesId.HasValue && blockedTagItemIds.Contains(e.SeriesId.Value))
-                && !e.Parents!.Any(p => blockedTagItemIds.Contains(p.ParentItemId))
+                && !blockedByAncestor.Contains(e.Id)
                 && !(e.TopParentId.HasValue && blockedTagItemIds.Contains(e.TopParentId.Value))
 
                 // Live TV programs have no parents, they carry the tags of their channel
@@ -1159,11 +1160,12 @@ public sealed partial class BaseItemRepository
             var allowedTagItemIds = context.ItemValuesMap
                 .Where(f => f.ItemValue.Type == ItemValueType.Tags && includeTags.Contains(f.ItemValue.CleanValue))
                 .Select(f => f.ItemId);
+            var allowedByAncestor = ItemsBelowTaggedAncestor(context, allowedTagItemIds);
 
             baseQuery = baseQuery.Where(e =>
                 allowedTagItemIds.Contains(e.Id)
                 || (e.SeriesId.HasValue && allowedTagItemIds.Contains(e.SeriesId.Value))
-                || e.Parents!.Any(p => allowedTagItemIds.Contains(p.ParentItemId))
+                || allowedByAncestor.Contains(e.Id)
                 || (e.TopParentId.HasValue && allowedTagItemIds.Contains(e.TopParentId.Value))
 
                 // Live TV programs have no parents, they carry the tags of their channel
