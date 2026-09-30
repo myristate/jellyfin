@@ -102,7 +102,9 @@ namespace Emby.Server.Implementations.Library
                     .Where(i => i.Type != MediaStreamType.Video || !string.IsNullOrEmpty(i.Codec))
                     .ToList();
 
-                if (cacheFilePath is not null && mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Video))
+                // Only cache a complete probe: one that caught the picture size. A short probe that just missed a sequence header
+                // is tried again next time instead of being kept for good.
+                if (cacheFilePath is not null && mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Video && i.Width > 0))
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(cacheFilePath) ?? throw new InvalidOperationException("Path can't be a root directory."));
                     // Create truncates, a shorter result written over a longer one would leave a corrupt file behind
