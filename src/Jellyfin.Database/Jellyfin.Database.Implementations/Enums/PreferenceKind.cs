@@ -91,5 +91,17 @@ public enum PreferenceKind
     /// Items a parent let this user see although their rating or tags would hide them (Finly). Everything below them,
     /// such as the episodes of a series, is let through too. Removed items stay removed.
     /// </summary>
-    AllowedItems = 1003
+    AllowedItems = 1003,
+
+    /// <summary>
+    /// When the user's recent wrong sign in PINs were entered, as UTC ticks (Finly). Kept so restarting the server
+    /// doesn't reset the PIN throttle.
+    /// </summary>
+    SignInPinFailures = 1004,
+
+    /// <summary>
+    /// Set, to the UTC ticks it happened, when too many wrong PINs turned PIN sign in off for the user (Finly). Signing
+    /// in with the password, or an administrator setting or removing the PIN, turns it back on.
+    /// </summary>
+    SignInPinDisabled = 1005
 }

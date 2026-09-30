@@ -38,6 +38,9 @@ namespace Jellyfin.Server.Implementations.Users
     /// </summary>
     public partial class UserManager : IUserManager, IDisposable
     {
+        // Starts like the lockout message, which clients show as it is (Finly)
+        private const string PinDisabledMessage = "Too many wrong PINs, PIN sign in is turned off. Sign in with your password, or ask a parent to set the PIN again.";
+
         private readonly IDbContextFactory<JellyfinDbContext> _dbProvider;
         private readonly IEventManager _eventManager;
         private readonly INetworkManager _networkManager;
@@ -52,7 +55,10 @@ namespace Jellyfin.Server.Implementations.Users
         private readonly IServerConfigurationManager _serverConfigurationManager;
 
         private readonly LockHelper _userLock = new();
-        private readonly SignInPinAttempts _pinAttempts = new();
+
+        // Held while checking, and changing, anything that could leave no administrator with a password (Finly).
+        // Always taken after a user's lock, never before one.
+        private readonly SemaphoreSlim _administratorLock = new(1, 1);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="UserManager"/> class.
@@ -95,6 +101,11 @@ namespace Jellyfin.Server.Implementations.Users
 
         /// <inheritdoc/>
         public event EventHandler<GenericEventArgs<User>>? OnUserUpdated;
+
+        /// <summary>
+        /// Gets or sets the clock the PIN throttle runs on, replaced in tests (Finly).
+        /// </summary>
+        internal TimeProvider TimeProvider { get; set; } = TimeProvider.System;
 
         /// <inheritdoc/>
         public IEnumerable<User> GetUsers()
@@ -294,11 +305,21 @@ namespace Jellyfin.Server.Implementations.Users
             var incoming = new Dictionary<PreferenceKind, string>();
             foreach (var preference in source)
             {
-                incoming[preference.Kind] = preference.Value;
+                if (!IsFinlyPreference(preference.Kind))
+                {
+                    incoming[preference.Kind] = preference.Value;
+                }
             }
 
             foreach (var existing in dbUser.Preferences)
             {
+                // Finly's own preferences (PIN, removed and allowed items, level, PIN throttle) only change through
+                // their own methods, so a stale copy of the user saved for its activity date can't undo them
+                if (IsFinlyPreference(existing.Kind))
+                {
+                    continue;
+                }
+
                 if (incoming.Remove(existing.Kind, out var value))
                 {
                     existing.Value = value;
@@ -314,6 +335,8 @@ namespace Jellyfin.Server.Implementations.Users
                 dbUser.Preferences.Add(new Preference(kind, value));
             }
         }
+
+        private static bool IsFinlyPreference(PreferenceKind kind) => (int)kind >= (int)PreferenceKind.SignInPinHash;
 
         internal async Task<User> CreateUserInternalAsync(string name, JellyfinDbContext dbContext)
         {
@@ -373,6 +396,7 @@ namespace Jellyfin.Server.Implementations.Users
         {
             User? user;
             using (await _userLock.LockAsync(userId).ConfigureAwait(false))
+            using (await LockAdministratorsAsync().ConfigureAwait(false))
             {
                 var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
                 await using (dbContext.ConfigureAwait(false))
@@ -428,7 +452,35 @@ namespace Jellyfin.Server.Implementations.Users
 
         /// <inheritdoc/>
         public bool HasOtherAdministratorWithPassword(Guid userId)
-            => GetUsers().Any(u => !u.Id.Equals(userId) && u.HasPermission(PermissionKind.IsAdministrator) && !string.IsNullOrEmpty(u.Password));
+            => GetUsers().Any(u => !u.Id.Equals(userId)
+                && u.HasPermission(PermissionKind.IsAdministrator)
+                && !u.HasPermission(PermissionKind.IsDisabled)
+                && !string.IsNullOrEmpty(u.Password));
+
+        /// <summary>
+        /// Takes the lock for checking and changing anything that could leave no administrator with a password
+        /// (Finly), so two such changes can't both pass the check. Take it after the user's lock.
+        /// </summary>
+        /// <returns>The lock, released when disposed.</returns>
+        private async Task<IDisposable> LockAdministratorsAsync()
+        {
+            await _administratorLock.WaitAsync().ConfigureAwait(false);
+            return new AdministratorLockHandle(_administratorLock);
+        }
+
+        private bool IsUsablePinHash(string pinHash)
+        {
+            if (_defaultAuthenticationProvider.IsValidPinHash(pinHash))
+            {
+                return true;
+            }
+
+            _logger.LogWarning("A stored sign in PIN can't be read, it is ignored until the PIN is set again");
+            return false;
+        }
+
+        private bool UsesDefaultAuthentication(User user)
+            => string.Equals(user.AuthenticationProviderId, _defaultAuthenticationProvider.GetType().FullName, StringComparison.OrdinalIgnoreCase);
 
         /// <inheritdoc/>
         public async Task SetPinAsync(Guid userId, string? pin)
@@ -438,24 +490,62 @@ namespace Jellyfin.Server.Implementations.Users
                 throw new ArgumentException($"A PIN must be {SignInPin.Length} digits.", nameof(pin));
             }
 
+            User user;
             using (await _userLock.LockAsync(userId).ConfigureAwait(false))
             {
                 var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
                 await using (dbContext.ConfigureAwait(false))
                 {
-                    var user = await UserQuery(dbContext)
+                    user = await UserQuery(dbContext)
                         .AsTracking()
                         .FirstOrDefaultAsync(u => u.Id == userId)
                         .ConfigureAwait(false)
                         ?? throw new ResourceNotFoundException(nameof(userId));
 
+                    // The PIN is checked by the server itself, so it can't stand in for another provider's password
+                    if (pin is not null && !UsesDefaultAuthentication(user))
+                    {
+                        throw new ArgumentException("A PIN only works for users whose password is kept by this server.", nameof(pin));
+                    }
+
                     user.SetPreference(PreferenceKind.SignInPinHash, pin is null ? Array.Empty<string>() : [_defaultAuthenticationProvider.HashPin(pin)]);
+
+                    // A new PIN, or none, starts again without wrong PINs held against it
+                    SignInPinAttempts.Reset(user);
                     await dbContext.SaveChangesAsync().ConfigureAwait(false);
                 }
             }
 
-            _pinAttempts.Succeeded(userId);
             _logger.LogInformation("Sign in PIN of user {UserId} {Action}", userId, pin is null ? "removed" : "set");
+            await PublishUserUpdatedAsync(user).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc/>
+        public async Task ClearPinLockoutAsync(Guid userId)
+        {
+            User user;
+            using (await _userLock.LockAsync(userId).ConfigureAwait(false))
+            {
+                var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+                await using (dbContext.ConfigureAwait(false))
+                {
+                    user = await UserQuery(dbContext)
+                        .AsTracking()
+                        .FirstOrDefaultAsync(u => u.Id == userId)
+                        .ConfigureAwait(false)
+                        ?? throw new ResourceNotFoundException(nameof(userId));
+
+                    if (!SignInPinAttempts.Reset(user))
+                    {
+                        return;
+                    }
+
+                    await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                }
+            }
+
+            _logger.LogInformation("Wrong PINs of user {UserId} cleared, PIN sign in is on again", userId);
+            await PublishUserUpdatedAsync(user).ConfigureAwait(false);
         }
 
         /// <inheritdoc/>
@@ -539,6 +629,13 @@ namespace Jellyfin.Server.Implementations.Users
             _logger.LogInformation("Item {ItemId} {Action} the library of user {UserId}", itemId, hidden ? "removed from" : "put back in", userId);
         }
 
+        private async Task PublishUserUpdatedAsync(User user)
+        {
+            var eventArgs = new UserUpdatedEventArgs(user);
+            await _eventManager.PublishAsync(eventArgs).ConfigureAwait(false);
+            OnUserUpdated?.Invoke(this, eventArgs);
+        }
+
         /// <inheritdoc/>
         public Task ResetPassword(Guid userId)
         {
@@ -550,6 +647,7 @@ namespace Jellyfin.Server.Implementations.Users
         {
             User dbUser = null!;
             using (await _userLock.LockAsync(userId).ConfigureAwait(false))
+            using (await LockAdministratorsAsync().ConfigureAwait(false))
             {
                 var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
                 await using (dbContext.ConfigureAwait(false))
@@ -588,7 +686,11 @@ namespace Jellyfin.Server.Implementations.Users
                 HasPassword = !string.IsNullOrEmpty(user.Password) || SignInPin.IsSet(user),
                 HasConfiguredPassword = !string.IsNullOrEmpty(user.Password),
 #pragma warning restore CS0618
-                HasPin = SignInPin.IsSet(user) && (remoteEndPoint is null || _networkManager.IsInLocalNetwork(remoteEndPoint)),
+                HasPin = SignInPin.GetHash(user) is string pinHash
+                    && _defaultAuthenticationProvider.IsValidPinHash(pinHash)
+                    && UsesDefaultAuthentication(user)
+                    && !SignInPinAttempts.IsDisabled(user)
+                    && (remoteEndPoint is null || _networkManager.IsInLocalNetwork(remoteEndPoint)),
                 LastLoginDate = user.LastLoginDate,
                 LastActivityDate = user.LastActivityDate,
                 PrimaryImageTag = user.ProfileImage is not null ? _imageProcessor.GetImageCacheTag(user) : null,
@@ -665,11 +767,20 @@ namespace Jellyfin.Server.Implementations.Users
         }
 
         /// <inheritdoc/>
-        public async Task<User?> AuthenticateUser(
+        public Task<User?> AuthenticateUser(
             string username,
             string password,
             string remoteEndPoint,
             bool isUserSession)
+            => AuthenticateUser(username, password, remoteEndPoint, isUserSession, true);
+
+        /// <inheritdoc/>
+        public async Task<User?> AuthenticateUser(
+            string username,
+            string password,
+            string remoteEndPoint,
+            bool isUserSession,
+            bool allowPin)
         {
             if (string.IsNullOrWhiteSpace(username))
             {
@@ -691,14 +802,26 @@ namespace Jellyfin.Server.Implementations.Users
                     user = await UserQuery(dbContext).FirstOrDefaultAsync(e => e.Id == user.Id).ConfigureAwait(false) ?? user;
                 }
 
-                // A PIN signs in on the home network in place of the password. Wrong PINs are throttled on their own and
-                // never count towards disabling the account.
-                var pinHash = user is null ? null : SignInPin.GetHash(user);
+                // A PIN signs in on the home network in place of the password (Finly), only for users whose password
+                // the server keeps itself. Wrong PINs are throttled on their own and never count towards disabling the
+                // account. Checking a current password never accepts the PIN.
+                var pinHash = user is not null && UsesDefaultAuthentication(user) ? SignInPin.GetHash(user) : null;
                 var pinTried = false;
                 var pinSignIn = false;
-                if (user is not null && pinHash is not null && SignInPin.IsValid(password) && _networkManager.IsInLocalNetwork(remoteEndPoint))
+                if (allowPin
+                    && user is not null
+                    && pinHash is not null
+                    && SignInPin.IsValid(password)
+                    && _networkManager.IsInLocalNetwork(remoteEndPoint)
+                    && IsUsablePinHash(pinHash))
                 {
-                    var lockout = _pinAttempts.GetLockout(user.Id);
+                    if (SignInPinAttempts.IsDisabled(user))
+                    {
+                        _logger.LogInformation("PIN sign in for {UserName} refused, it is turned off after too many wrong PINs (IP: {IP}).", username, remoteEndPoint);
+                        throw new SecurityException(PinDisabledMessage);
+                    }
+
+                    var lockout = SignInPinAttempts.GetLockout(user, TimeProvider.GetUtcNow().UtcDateTime);
                     if (lockout > TimeSpan.Zero)
                     {
                         _logger.LogInformation("PIN sign in for {UserName} refused for another {Seconds:0} seconds after too many wrong PINs (IP: {IP}).", username, lockout.TotalSeconds, remoteEndPoint);
@@ -707,14 +830,6 @@ namespace Jellyfin.Server.Implementations.Users
 
                     pinTried = true;
                     pinSignIn = _defaultAuthenticationProvider.VerifyPin(pinHash, password);
-                    if (pinSignIn)
-                    {
-                        _pinAttempts.Succeeded(user.Id);
-                    }
-                    else
-                    {
-                        _pinAttempts.Failed(user.Id);
-                    }
                 }
 
                 // Without a password only the PIN signs in: an empty password must not open a PIN protected profile
@@ -730,11 +845,19 @@ namespace Jellyfin.Server.Implementations.Users
 
                 if (pinTried && !authResult.Success)
                 {
+                    await RecordWrongPinAsync(user!.Id).ConfigureAwait(false);
                     _logger.LogInformation("Authentication request for {UserName} has been denied, wrong PIN (IP: {IP}).", username, remoteEndPoint);
                     return null;
                 }
+
                 var authenticationProvider = authResult.AuthenticationProvider;
                 success = authResult.Success;
+
+                // Signing in, with the PIN or the password, forgets the wrong PINs and turns PIN sign in back on
+                if (success && user is not null && SignInPinAttempts.HasAnything(user))
+                {
+                    await ResetPinAttemptsAsync(user.Id).ConfigureAwait(false);
+                }
 
                 if (success && user is not null)
                 {
@@ -770,7 +893,8 @@ namespace Jellyfin.Server.Implementations.Users
                     }
                 }
 
-                if (success && user is not null && authenticationProvider is not null)
+                // A PIN is checked in place of the user's own provider, which must not become theirs because of it
+                if (success && user is not null && authenticationProvider is not null && !pinSignIn)
                 {
                     var providerId = authenticationProvider.GetType().FullName;
 
@@ -1021,6 +1145,7 @@ namespace Jellyfin.Server.Implementations.Users
         {
             User user;
             using (await _userLock.LockAsync(userId).ConfigureAwait(false))
+            using (await LockAdministratorsAsync().ConfigureAwait(false))
             {
                 var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
                 await using (dbContext.ConfigureAwait(false))
@@ -1030,6 +1155,15 @@ namespace Jellyfin.Server.Implementations.Users
                         .FirstOrDefaultAsync(u => u.Id.Equals(userId))
                         .ConfigureAwait(false)
                         ?? throw new ArgumentException("No user exists with given Id!");
+
+                    // There must always be an administrator with a password (Finly). Checked again here, under the
+                    // lock, so two administrators can't be demoted at once.
+                    if (user.HasPermission(PermissionKind.IsAdministrator)
+                        && (!policy.IsAdministrator || policy.IsDisabled)
+                        && !HasOtherAdministratorWithPassword(userId))
+                    {
+                        throw new ArgumentException("There must always be an administrator with a password. Give another administrator a password first.", nameof(policy));
+                    }
 
                     // The default number of login attempts is 3, but for some god forsaken reason it's sent to the server as "0"
                     int? maxLoginAttempts = policy.LoginAttemptsBeforeLockout switch
@@ -1146,6 +1280,63 @@ namespace Jellyfin.Server.Implementations.Users
             }
 
             throw new ArgumentException("Usernames can contain unicode symbols, numbers (0-9), dashes (-), underscores (_), apostrophes ('), and periods (.)", nameof(name));
+        }
+
+        /// <summary>
+        /// Counts a wrong PIN in the user's preferences (Finly), and reports a lockout or PIN sign in being turned off
+        /// to the activity log.
+        /// </summary>
+        /// <param name="userId">The user id, whose lock is held.</param>
+        /// <returns>A task representing the change.</returns>
+        private async Task RecordWrongPinAsync(Guid userId)
+        {
+            var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+            await using (dbContext.ConfigureAwait(false))
+            {
+                var user = await UserQuery(dbContext)
+                    .AsTracking()
+                    .FirstOrDefaultAsync(u => u.Id == userId)
+                    .ConfigureAwait(false);
+                if (user is null)
+                {
+                    return;
+                }
+
+                var failure = SignInPinAttempts.RecordFailure(user, TimeProvider.GetUtcNow().UtcDateTime);
+                await dbContext.SaveChangesAsync().ConfigureAwait(false);
+
+                if (failure.Disabled)
+                {
+                    _logger.LogWarning("PIN sign in for {UserName} turned off after {Failures} wrong PINs", user.Username, failure.Failures);
+                    await _eventManager.PublishAsync(new UserPinLockedOutEventArgs(user, failure.Lockout, true)).ConfigureAwait(false);
+                }
+                else if (failure.LockoutStarted)
+                {
+                    _logger.LogWarning("PIN sign in for {UserName} refused for {Seconds:0} seconds after {Failures} wrong PINs", user.Username, failure.Lockout.TotalSeconds, failure.Failures);
+                    await _eventManager.PublishAsync(new UserPinLockedOutEventArgs(user, failure.Lockout, false)).ConfigureAwait(false);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Forgets the user's wrong PINs and turns PIN sign in back on (Finly).
+        /// </summary>
+        /// <param name="userId">The user id, whose lock is held.</param>
+        /// <returns>A task representing the change.</returns>
+        private async Task ResetPinAttemptsAsync(Guid userId)
+        {
+            var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+            await using (dbContext.ConfigureAwait(false))
+            {
+                var user = await UserQuery(dbContext)
+                    .AsTracking()
+                    .FirstOrDefaultAsync(u => u.Id == userId)
+                    .ConfigureAwait(false);
+                if (user is not null && SignInPinAttempts.Reset(user))
+                {
+                    await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                }
+            }
         }
 
         private IAuthenticationProvider GetAuthenticationProvider(User user)
@@ -1290,7 +1481,20 @@ namespace Jellyfin.Server.Implementations.Users
             if (disposing)
             {
                 _userLock.Dispose();
+                _administratorLock.Dispose();
             }
+        }
+
+        private sealed class AdministratorLockHandle : IDisposable
+        {
+            private SemaphoreSlim? _semaphore;
+
+            public AdministratorLockHandle(SemaphoreSlim semaphore)
+            {
+                _semaphore = semaphore;
+            }
+
+            public void Dispose() => Interlocked.Exchange(ref _semaphore, null)?.Release();
         }
 
         internal sealed class LockHelper : IDisposable

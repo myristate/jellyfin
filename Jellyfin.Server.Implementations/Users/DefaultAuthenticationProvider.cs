@@ -101,12 +101,51 @@ namespace Jellyfin.Server.Implementations.Users
         public string HashPin(string pin) => _cryptographyProvider.CreatePasswordHash(pin).ToString();
 
         /// <summary>
-        /// Checks a sign in PIN against its stored hash.
+        /// Checks a sign in PIN against its stored hash (Finly). A hash that can't be read never matches.
         /// </summary>
         /// <param name="hash">The stored hash.</param>
         /// <param name="pin">The PIN entered.</param>
         /// <returns><c>true</c> when the PIN matches.</returns>
-        public bool VerifyPin(string hash, string pin) => _cryptographyProvider.Verify(PasswordHash.Parse(hash), pin);
+        public bool VerifyPin(string hash, string pin)
+        {
+            var passwordHash = TryParsePinHash(hash);
+            if (passwordHash is null)
+            {
+                _logger.LogWarning("A stored sign in PIN can't be read, it is ignored");
+                return false;
+            }
+
+            return _cryptographyProvider.Verify(passwordHash, pin);
+        }
+
+        /// <summary>
+        /// Checks whether a stored PIN hash can be read (Finly). A PIN whose hash can't be read is as good as none.
+        /// </summary>
+        /// <param name="hash">The stored hash.</param>
+        /// <returns><c>true</c> when a PIN can be checked against it.</returns>
+        public bool IsValidPinHash(string hash) => TryParsePinHash(hash) is not null;
+
+        private PasswordHash? TryParsePinHash(string hash)
+        {
+            try
+            {
+                var passwordHash = PasswordHash.Parse(hash);
+                if (passwordHash.Hash.Length > 0
+                    && string.Equals(passwordHash.Id, _cryptographyProvider.DefaultHashMethod, StringComparison.Ordinal)
+                    && passwordHash.Parameters.TryGetValue("iterations", out var iterations)
+                    && int.TryParse(iterations, NumberStyles.None, CultureInfo.InvariantCulture, out var count)
+                    && count > 0)
+                {
+                    return passwordHash;
+                }
+            }
+            catch (Exception ex) when (ex is FormatException or ArgumentException)
+            {
+                return null;
+            }
+
+            return null;
+        }
 
         /// <inheritdoc />
         public Task ChangePassword(User user, string newPassword)

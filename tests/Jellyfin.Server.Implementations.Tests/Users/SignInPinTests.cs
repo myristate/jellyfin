@@ -1,11 +1,16 @@
 using System;
+using Emby.Server.Implementations.Cryptography;
+using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Server.Implementations.Users;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Jellyfin.Server.Implementations.Tests.Users;
 
 public class SignInPinTests
 {
+    private static readonly DateTime _now = new(2026, 9, 30, 18, 0, 0, DateTimeKind.Utc);
+
     [Theory]
     [InlineData("1234", true)]
     [InlineData("0706", true)]
@@ -22,74 +27,131 @@ public class SignInPinTests
     [Fact]
     public void Attempts_FiveWrongPinsAreFree()
     {
-        var attempts = new SignInPinAttempts();
-        var userId = Guid.NewGuid();
+        var user = CreateUser();
 
-        for (var i = 0; i < 4; i++)
-        {
-            attempts.Failed(userId);
-        }
+        Fail(user, 4);
 
-        Assert.Equal(TimeSpan.Zero, attempts.GetLockout(userId));
+        Assert.Equal(TimeSpan.Zero, SignInPinAttempts.GetLockout(user, _now));
     }
 
     [Fact]
     public void Attempts_FifthWrongPinLocksForThirtySeconds()
     {
-        var attempts = new SignInPinAttempts();
-        var userId = Guid.NewGuid();
+        var user = CreateUser();
 
-        for (var i = 0; i < 5; i++)
-        {
-            attempts.Failed(userId);
-        }
+        var failure = Fail(user, 5);
 
-        var lockout = attempts.GetLockout(userId);
-        Assert.InRange(lockout, TimeSpan.FromSeconds(28), TimeSpan.FromSeconds(30));
+        Assert.True(failure.LockoutStarted);
+        Assert.Equal(TimeSpan.FromSeconds(30), SignInPinAttempts.GetLockout(user, _now));
     }
 
     [Fact]
     public void Attempts_EachFurtherWrongPinLocksLonger()
     {
-        var attempts = new SignInPinAttempts();
-        var userId = Guid.NewGuid();
+        var user = CreateUser();
 
-        for (var i = 0; i < 6; i++)
-        {
-            attempts.Failed(userId);
-        }
+        Fail(user, 6);
 
-        Assert.InRange(attempts.GetLockout(userId), TimeSpan.FromSeconds(58), TimeSpan.FromSeconds(60));
+        Assert.Equal(TimeSpan.FromSeconds(60), SignInPinAttempts.GetLockout(user, _now));
     }
 
     [Fact]
-    public void Attempts_SuccessClearsWrongPins()
+    public void Attempts_ResetClearsWrongPins()
     {
-        var attempts = new SignInPinAttempts();
-        var userId = Guid.NewGuid();
+        var user = CreateUser();
+        Fail(user, 5);
 
-        for (var i = 0; i < 5; i++)
-        {
-            attempts.Failed(userId);
-        }
+        Assert.True(SignInPinAttempts.Reset(user));
+        SignInPinAttempts.RecordFailure(user, _now);
 
-        attempts.Succeeded(userId);
-        attempts.Failed(userId);
-
-        Assert.Equal(TimeSpan.Zero, attempts.GetLockout(userId));
+        Assert.Equal(TimeSpan.Zero, SignInPinAttempts.GetLockout(user, _now));
     }
 
     [Fact]
     public void Attempts_AreCountedPerUser()
     {
-        var attempts = new SignInPinAttempts();
-        var parent = Guid.NewGuid();
+        var parent = CreateUser();
+        Fail(parent, 5);
 
-        for (var i = 0; i < 5; i++)
+        Assert.Equal(TimeSpan.Zero, SignInPinAttempts.GetLockout(CreateUser(), _now));
+    }
+
+    [Fact]
+    public void Attempts_TwentyWrongPinsTurnPinSignInOff()
+    {
+        var user = CreateUser();
+
+        var nineteenth = Fail(user, 19);
+        Assert.False(nineteenth.Disabled);
+        Assert.False(SignInPinAttempts.IsDisabled(user));
+
+        var twentieth = SignInPinAttempts.RecordFailure(user, _now);
+        Assert.True(twentieth.Disabled);
+        Assert.False(twentieth.LockoutStarted);
+        Assert.True(SignInPinAttempts.IsDisabled(user));
+
+        // Until the password is used, or the PIN set again
+        Assert.True(SignInPinAttempts.Reset(user));
+        Assert.False(SignInPinAttempts.IsDisabled(user));
+        Assert.False(SignInPinAttempts.HasAnything(user));
+    }
+
+    [Fact]
+    public void Attempts_OlderThanADayDontCount()
+    {
+        var user = CreateUser();
+        Fail(user, 19, _now.AddHours(-25));
+
+        var failure = SignInPinAttempts.RecordFailure(user, _now);
+
+        Assert.Equal(1, failure.Failures);
+        Assert.False(failure.Disabled);
+        Assert.Equal(TimeSpan.Zero, SignInPinAttempts.GetLockout(user, _now));
+    }
+
+    [Fact]
+    public void Attempts_LockoutEndsAfterItsTime()
+    {
+        var user = CreateUser();
+        Fail(user, 5);
+
+        Assert.Equal(TimeSpan.Zero, SignInPinAttempts.GetLockout(user, _now.AddSeconds(31)));
+    }
+
+    [Theory]
+    [InlineData("garbage")]
+    [InlineData("$PBKDF2-SHA512$")]
+    [InlineData("$PBKDF2-SHA512$iterations=0$00$00")]
+    [InlineData("$UNKNOWN$iterations=1000$00$00")]
+    public void VerifyPin_UnreadableHash_NeverMatchesAndDoesNotThrow(string hash)
+    {
+        var provider = new DefaultAuthenticationProvider(NullLogger<DefaultAuthenticationProvider>.Instance, new CryptographyProvider());
+
+        Assert.False(provider.IsValidPinHash(hash));
+        Assert.False(provider.VerifyPin(hash, "1234"));
+    }
+
+    [Fact]
+    public void VerifyPin_MatchesItsOwnHash()
+    {
+        var provider = new DefaultAuthenticationProvider(NullLogger<DefaultAuthenticationProvider>.Instance, new CryptographyProvider());
+        var hash = provider.HashPin("1234");
+
+        Assert.True(provider.IsValidPinHash(hash));
+        Assert.True(provider.VerifyPin(hash, "1234"));
+        Assert.False(provider.VerifyPin(hash, "4321"));
+    }
+
+    private static User CreateUser() => new("calum", typeof(DefaultAuthenticationProvider).FullName!, typeof(DefaultPasswordResetProvider).FullName!);
+
+    private static SignInPinFailure Fail(User user, int times, DateTime? at = null)
+    {
+        SignInPinFailure? failure = null;
+        for (var i = 0; i < times; i++)
         {
-            attempts.Failed(parent);
+            failure = SignInPinAttempts.RecordFailure(user, at ?? _now);
         }
 
-        Assert.Equal(TimeSpan.Zero, attempts.GetLockout(Guid.NewGuid()));
+        return failure!;
     }
 }
