@@ -132,6 +132,15 @@ namespace MediaBrowser.Controller.Library
         /// <returns>Task.</returns>
         Task CloseLiveStream(string id);
 
+        /// <summary>
+        /// Closes the media source.
+        /// </summary>
+        /// <param name="id">The live stream identifier.</param>
+        /// <param name="immediately">Whether to close a tuner stream straight away instead of keeping it open briefly in case
+        /// it is watched again, for example when a background task opened it.</param>
+        /// <returns>Task.</returns>
+        Task CloseLiveStream(string id, bool immediately);
+
         Task<MediaSourceInfo> GetLiveStreamMediaInfo(string id, CancellationToken cancellationToken);
 
         bool SupportsDirectStream(string path, MediaProtocol protocol);

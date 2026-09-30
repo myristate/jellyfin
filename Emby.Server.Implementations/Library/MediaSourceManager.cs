@@ -1044,7 +1044,11 @@ namespace Emby.Server.Implementations.Library
             return [stream];
         }
 
-        public async Task CloseLiveStream(string id)
+        public Task CloseLiveStream(string id)
+            => CloseLiveStream(id, false);
+
+        /// <inheritdoc />
+        public async Task CloseLiveStream(string id, bool immediately)
         {
             ArgumentException.ThrowIfNullOrEmpty(id);
 
@@ -1060,7 +1064,7 @@ namespace Emby.Server.Implementations.Library
                     {
                         liveStream.ConsumerCount = 0;
 
-                        if (liveStream.EnableStreamSharing)
+                        if (liveStream.EnableStreamSharing && !immediately)
                         {
                             // Keep the tuner on the channel for a moment: flicking back, a client retry or a guide preview
                             // turning into full screen then shares the running stream instead of tuning from scratch
