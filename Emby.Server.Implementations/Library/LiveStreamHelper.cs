@@ -46,8 +46,22 @@ namespace Emby.Server.Implementations.Library
             _appPaths = appPaths;
         }
 
-        public async Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, CancellationToken cancellationToken)
+        public Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, CancellationToken cancellationToken)
+            => AddMediaInfoWithProbe(mediaSource, isAudio, cacheKey, addProbeDelay, null, cancellationToken);
+
+        /// <summary>
+        /// Probes a live stream, or uses what probing its channel found before.
+        /// </summary>
+        /// <param name="mediaSource">The stream's media source, which is filled in.</param>
+        /// <param name="isAudio">Whether it is a radio station.</param>
+        /// <param name="cacheKey">The key under which the probe is cached, or <c>null</c> not to cache it.</param>
+        /// <param name="addProbeDelay">Whether to wait before probing.</param>
+        /// <param name="probeTimeout">How long probing may take (Finly), or <c>null</c> for <see cref="LiveProbeTimeout"/>.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A task.</returns>
+        public async Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, TimeSpan? probeTimeout, CancellationToken cancellationToken)
         {
+            var timeout = probeTimeout ?? LiveProbeTimeout;
             var originalRuntime = mediaSource.RunTimeTicks;
 
             var now = DateTime.UtcNow;
@@ -95,7 +109,7 @@ namespace Emby.Server.Implementations.Library
 
                 using (var probeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                 {
-                    probeCancellation.CancelAfter(LiveProbeTimeout);
+                    probeCancellation.CancelAfter(timeout);
                     try
                     {
                         mediaInfo = await _mediaEncoder.GetMediaInfo(
@@ -109,7 +123,7 @@ namespace Emby.Server.Implementations.Library
                     }
                     catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                     {
-                        throw new TimeoutException($"Probing the live stream took longer than {LiveProbeTimeout.TotalSeconds} seconds");
+                        throw new TimeoutException($"Probing the live stream took longer than {timeout.TotalSeconds} seconds");
                     }
                 }
 

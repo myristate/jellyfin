@@ -94,6 +94,22 @@ namespace MediaBrowser.Controller.Library
         Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> OpenLiveStreamInternal(LiveStreamRequest request, CancellationToken cancellationToken);
 
         /// <summary>
+        /// Opens a live stream with options (Finly), for example a longer probe for a recording.
+        /// </summary>
+        /// <param name="request">The request.</param>
+        /// <param name="options">The options, or <c>null</c> for the defaults.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The opened stream.</returns>
+        Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> OpenLiveStreamInternal(LiveStreamRequest request, LiveStreamOpenOptions options, CancellationToken cancellationToken)
+            => OpenLiveStreamInternal(request, cancellationToken);
+
+        /// <summary>
+        /// Gets the open live streams by live stream id (Finly).
+        /// </summary>
+        /// <returns>The open live streams, or <c>null</c> when they can't be listed.</returns>
+        IReadOnlyCollection<KeyValuePair<string, ILiveStream>> GetOpenLiveStreams() => null;
+
+        /// <summary>
         /// Gets the live stream.
         /// </summary>
         /// <param name="id">The identifier.</param>

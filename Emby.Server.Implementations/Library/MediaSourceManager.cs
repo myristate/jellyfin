@@ -40,7 +40,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Emby.Server.Implementations.Library
 {
-    public class MediaSourceManager : IMediaSourceManager, IDisposable
+    public partial class MediaSourceManager : IMediaSourceManager, IDisposable
     {
         // Do not use a pipe here because Roku http requests to the server will fail, without any explicit error message.
         private const char LiveStreamIdDelimiter = '_';
@@ -655,106 +655,8 @@ namespace Emby.Server.Implementations.Library
                 .Where(i => i.Type != MediaSourceType.Placeholder);
         }
 
-        public async Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> OpenLiveStreamInternal(LiveStreamRequest request, CancellationToken cancellationToken)
-        {
-            MediaSourceInfo mediaSource;
-            ILiveStream liveStream;
-
-            using (await _liveStreamLocker.LockAsync(cancellationToken).ConfigureAwait(false))
-            {
-                var (provider, keyId) = GetProvider(request.OpenToken);
-
-                var currentLiveStreams = _openStreams.Values.ToList();
-
-                for (var attempt = 1; ; attempt++)
-                {
-                    try
-                    {
-                        liveStream = await provider.OpenMediaSource(keyId, currentLiveStreams, cancellationToken).ConfigureAwait(false);
-                        break;
-                    }
-                    catch (LiveTvConflictException) when (attempt < LiveStreamConflictAttempts)
-                    {
-                        // No free tuner. Streams kept open after their last viewer left can be closed to make room, and a
-                        // tuner that was just released (by this server, or another one sharing the tuner) takes a moment
-                        // before the tuner hands it out again, so wait a little and try again.
-                        var closed = await CloseIdleLiveStreams().ConfigureAwait(false);
-                        _logger.LogInformation("No free tuner (attempt {Attempt}), closed {Closed} idle streams, trying again", attempt, closed);
-                        await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), cancellationToken).ConfigureAwait(false);
-                        currentLiveStreams = _openStreams.Values.ToList();
-                    }
-                }
-
-                mediaSource = liveStream.MediaSource;
-
-                // Validate that this is actually possible
-                if (mediaSource.SupportsDirectStream)
-                {
-                    mediaSource.SupportsDirectStream = SupportsDirectStream(mediaSource.Path, mediaSource.Protocol);
-                }
-
-                SetKeyProperties(provider, mediaSource);
-
-                // Every open of a channel has the same live stream id. A new stream (rather than the running one shared)
-                // means the previous stream wasn't reusable, so close it instead of losing track of it with its tuner.
-                if (_openStreams.TryGetValue(mediaSource.LiveStreamId, out var previous) && !ReferenceEquals(previous, liveStream))
-                {
-                    _logger.LogInformation("Replacing live stream {0}, closing the previous one", mediaSource.LiveStreamId);
-                    await previous.Close().ConfigureAwait(false);
-                }
-
-                _openStreams[mediaSource.LiveStreamId] = liveStream;
-            }
-
-            try
-            {
-                if (mediaSource.MediaStreams.Any(i => i.Index != -1) || !mediaSource.SupportsProbing)
-                {
-                    AddMediaInfo(mediaSource);
-                }
-                else
-                {
-                    // hack - these two values were taken from LiveTVMediaSourceProvider
-                    string cacheKey = request.OpenToken;
-
-                    // No fixed wait before probing: the probe reads the live data as it arrives, and the wait added
-                    // 3 seconds to every first tune of a channel
-                    await new LiveStreamHelper(_mediaEncoder, _logger, _appPaths)
-                        .AddMediaInfoWithProbe(mediaSource, false, cacheKey, false, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-            }
-            catch (TimeoutException ex)
-            {
-                // Every broadcasting channel is identified within 2 seconds. One that isn't has sent nothing playable, for
-                // example a part time channel that is off air or one that has moved since the tuner last scanned. Free
-                // the tuner and say so, rather than letting the client wait for a picture that never comes.
-                _logger.LogWarning("Live stream {LiveStreamId}: {Message}, the channel isn't broadcasting", mediaSource.LiveStreamId, ex.Message);
-                await CloseLiveStream(mediaSource.LiveStreamId, true).ConfigureAwait(false);
-                throw new LiveTvChannelUnavailableException("The channel isn't broadcasting right now");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error probing live tv stream");
-                AddMediaInfo(mediaSource);
-            }
-
-            // TODO: @bond Fix
-            var json = JsonSerializer.SerializeToUtf8Bytes(mediaSource, _jsonOptions);
-            _logger.LogInformation("Live stream opened: {@MediaSource}", mediaSource);
-            var clone = JsonSerializer.Deserialize<MediaSourceInfo>(json, _jsonOptions);
-
-            if (!request.UserId.IsEmpty())
-            {
-                var user = _userManager.GetUserById(request.UserId);
-                var item = request.ItemId.IsEmpty()
-                    ? null
-                    : _libraryManager.GetItemById(request.ItemId);
-                SetDefaultAudioAndSubtitleStreamIndices(item, clone, user);
-            }
-
-            return new Tuple<LiveStreamResponse, IDirectStreamProvider>(new LiveStreamResponse(clone), liveStream as IDirectStreamProvider);
-        }
+        public Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> OpenLiveStreamInternal(LiveStreamRequest request, CancellationToken cancellationToken)
+            => OpenLiveStreamInternal(request, null, cancellationToken);
 
         private static void AddMediaInfo(MediaSourceInfo mediaSource)
         {
@@ -1131,6 +1033,7 @@ namespace Emby.Server.Implementations.Library
         {
             _openStreams.TryRemove(id, out _);
             _closeGenerations.TryRemove(id, out _);
+            _liveStreamOpenTokens.TryRemove(id, out _);
 
             _logger.LogInformation("Closing live stream {0}", id);
 
@@ -1167,12 +1070,11 @@ namespace Emby.Server.Implementations.Library
         {
             if (dispose)
             {
-                foreach (var key in _openStreams.Keys.ToList())
-                {
-                    CloseLiveStream(key).GetAwaiter().GetResult();
-                }
+                // (Finly) Shutting down: close every stream now, not after the grace period, which would never come
+                CloseAllLiveStreams();
 
                 _liveStreamLocker.Dispose();
+                _liveStreamOpenLocks.Dispose();
             }
         }
     }
