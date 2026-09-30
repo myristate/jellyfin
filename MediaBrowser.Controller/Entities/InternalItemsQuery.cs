@@ -34,6 +34,7 @@ namespace MediaBrowser.Controller.Entities
             IncludeInheritedTags = [];
             ExcludeItemIds = [];
             HiddenItemIds = [];
+            AllowedItemIds = [];
             ExcludeItemTypes = [];
             ExcludeTags = [];
             GenreIds = [];
@@ -255,6 +256,12 @@ namespace MediaBrowser.Controller.Entities
         /// below them is hidden too, such as the episodes of a series.
         /// </summary>
         public Guid[] HiddenItemIds { get; set; }
+
+        /// <summary>
+        /// Gets or sets the items a parent let the user see although their rating or tags would hide them, with
+        /// everything below them.
+        /// </summary>
+        public Guid[] AllowedItemIds { get; set; }
 
         public Guid? AdjacentTo { get; set; }
 
@@ -555,6 +562,7 @@ namespace MediaBrowser.Controller.Entities
                 .ToArray();
 
             HiddenItemIds = user.GetPreferenceValues<Guid>(PreferenceKind.HiddenItems);
+            AllowedItemIds = user.GetPreferenceValues<Guid>(PreferenceKind.AllowedItems);
 
             UserHasContentRestrictions = user.HasContentRestrictions();
             User = user;

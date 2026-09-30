@@ -177,7 +177,8 @@ public static class UserEntityExtensions
             || entity.GetPreference(PreferenceKind.BlockedTags).Length > 0
             || entity.GetPreference(PreferenceKind.AllowedTags).Length > 0
             || entity.GetPreference(PreferenceKind.BlockUnratedItems).Length > 0
-            || entity.GetPreference(PreferenceKind.HiddenItems).Length > 0;
+            || entity.GetPreference(PreferenceKind.HiddenItems).Length > 0
+            || entity.GetPreference(PreferenceKind.AllowedItems).Length > 0;
     }
 
     /// <summary>

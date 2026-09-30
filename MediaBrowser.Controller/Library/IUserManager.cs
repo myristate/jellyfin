@@ -122,6 +122,16 @@ namespace MediaBrowser.Controller.Library
         Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden);
 
         /// <summary>
+        /// Lets the user see an item although their rating or tags would hide it, or takes that back. Allowing an item
+        /// also puts it back if it was removed from the user's library.
+        /// </summary>
+        /// <param name="userId">The user id.</param>
+        /// <param name="itemId">The item id.</param>
+        /// <param name="allowed">Whether the item is allowed.</param>
+        /// <returns>A task representing the change.</returns>
+        Task SetItemAllowedAsync(Guid userId, Guid itemId, bool allowed);
+
+        /// <summary>
         /// Resets the password.
         /// </summary>
         /// <param name="userId">The users Id.</param>

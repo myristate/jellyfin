@@ -449,6 +449,7 @@ public sealed partial class BaseItemRepository
         => filter.IncludeInheritedTags.Length > 0
             || filter.ExcludeInheritedTags.Length > 0
             || filter.HiddenItemIds.Length > 0
+            || filter.AllowedItemIds.Length > 0
             || filter.MaxParentalRating is not null
             || filter.BlockUnratedItems.Length > 0;
 
@@ -590,18 +591,21 @@ public sealed partial class BaseItemRepository
         IQueryable<BaseItemEntity> baseQuery,
         InternalItemsQuery filter)
     {
+        // Items a parent allowed pass every restriction below, removed items stay out
+        var allowed = BuildAllowedItemsFilter(context, filter);
+
         // Apply parental rating filtering
         if (filter.MaxParentalRating is not null)
         {
-            baseQuery = baseQuery.Where(BuildMaxParentalRatingFilter(context, filter.MaxParentalRating));
+            baseQuery = baseQuery.Where(OrAllowed(allowed, BuildMaxParentalRatingFilter(context, filter.MaxParentalRating)));
         }
 
         // Apply block unrated items filtering
         if (filter.BlockUnratedItems.Length > 0)
         {
             var unratedItemTypes = filter.BlockUnratedItems.Select(f => f.ToString()).ToArray();
-            baseQuery = baseQuery.Where(e =>
-                e.InheritedParentalRatingValue != null || !unratedItemTypes.Contains(e.UnratedType));
+            baseQuery = baseQuery.Where(OrAllowed(allowed, e =>
+                e.InheritedParentalRatingValue != null || !unratedItemTypes.Contains(e.UnratedType)));
         }
 
         baseQuery = ExcludeHiddenItems(context, baseQuery, filter);
@@ -617,14 +621,14 @@ public sealed partial class BaseItemRepository
                 .Select(f => f.ItemId);
             var blockedByAncestor = ItemsBelowTaggedAncestor(context, blockedTagItemIds);
 
-            baseQuery = baseQuery.Where(e =>
+            baseQuery = baseQuery.Where(OrAllowed(allowed, e =>
                 !blockedTagItemIds.Contains(e.Id)
                 && !(e.SeriesId.HasValue && blockedTagItemIds.Contains(e.SeriesId.Value))
                 && !blockedByAncestor.Contains(e.Id)
                 && !(e.TopParentId.HasValue && blockedTagItemIds.Contains(e.TopParentId.Value))
 
                 // Live TV programs have no parents, they carry the tags of their channel
-                && !(e.ChannelId.HasValue && blockedTagItemIds.Contains(e.ChannelId.Value)));
+                && !(e.ChannelId.HasValue && blockedTagItemIds.Contains(e.ChannelId.Value))));
         }
 
         // Apply included tags filtering (allowed tags - item must have at least one).
@@ -637,7 +641,7 @@ public sealed partial class BaseItemRepository
                 .Select(f => f.ItemId);
             var allowedByAncestor = ItemsBelowTaggedAncestor(context, allowedTagItemIds);
 
-            baseQuery = baseQuery.Where(e =>
+            baseQuery = baseQuery.Where(OrAllowed(allowed, e =>
                 allowedTagItemIds.Contains(e.Id)
                 || (e.SeriesId.HasValue && allowedTagItemIds.Contains(e.SeriesId.Value))
                 || allowedByAncestor.Contains(e.Id)
@@ -647,11 +651,44 @@ public sealed partial class BaseItemRepository
                 || (e.ChannelId.HasValue && allowedTagItemIds.Contains(e.ChannelId.Value))
 
                 // People don't carry the tags of the media they appear in and would never match
-                || e.Type == personTypeName);
+                || e.Type == personTypeName));
         }
 
         return baseQuery;
     }
+
+    /// <summary>
+    /// Builds the test for items a parent let the user see, and everything below them, or <c>null</c> when there are
+    /// none.
+    /// </summary>
+    /// <param name="context">The database context.</param>
+    /// <param name="filter">The query filter, with the user's allowed items.</param>
+    /// <returns>The test.</returns>
+    private static Expression<Func<BaseItemEntity, bool>>? BuildAllowedItemsFilter(JellyfinDbContext context, InternalItemsQuery filter)
+    {
+        if (filter.AllowedItemIds.Length == 0)
+        {
+            return null;
+        }
+
+        var allowedIds = filter.AllowedItemIds;
+        var allowedItems = context.BaseItems.Where(b => allowedIds.Contains(b.Id)).Select(b => b.Id);
+        var belowAllowed = ItemsBelowTaggedAncestor(context, allowedItems);
+        return e => allowedIds.Contains(e.Id)
+            || (e.SeriesId.HasValue && allowedIds.Contains(e.SeriesId.Value))
+            || belowAllowed.Contains(e.Id);
+    }
+
+    /// <summary>
+    /// Lets the items a parent allowed through a restriction.
+    /// </summary>
+    /// <param name="allowed">The allowed items test, from <see cref="BuildAllowedItemsFilter"/>.</param>
+    /// <param name="restriction">The restriction.</param>
+    /// <returns>The restriction, or allowed.</returns>
+    private static Expression<Func<BaseItemEntity, bool>> OrAllowed(
+        Expression<Func<BaseItemEntity, bool>>? allowed,
+        Expression<Func<BaseItemEntity, bool>> restriction)
+        => allowed is null ? restriction : restriction.Or(allowed);
 
     /// <summary>
     /// Leaves out the items the user removed from their library, and everything below them.

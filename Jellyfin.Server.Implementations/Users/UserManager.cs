@@ -459,6 +459,50 @@ namespace Jellyfin.Server.Implementations.Users
         }
 
         /// <inheritdoc/>
+        public async Task SetItemAllowedAsync(Guid userId, Guid itemId, bool allowed)
+        {
+            using (await _userLock.LockAsync(userId).ConfigureAwait(false))
+            {
+                var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+                await using (dbContext.ConfigureAwait(false))
+                {
+                    var user = await UserQuery(dbContext)
+                        .AsTracking()
+                        .FirstOrDefaultAsync(u => u.Id == userId)
+                        .ConfigureAwait(false)
+                        ?? throw new ResourceNotFoundException(nameof(userId));
+
+                    var allowedItems = user.GetPreferenceValues<Guid>(PreferenceKind.AllowedItems).ToList();
+                    var hiddenItems = user.GetPreferenceValues<Guid>(PreferenceKind.HiddenItems).ToList();
+                    var changed = allowed
+                        ? AddOnce(allowedItems, itemId) | hiddenItems.Remove(itemId)
+                        : allowedItems.Remove(itemId);
+                    if (!changed)
+                    {
+                        return;
+                    }
+
+                    user.SetPreference(PreferenceKind.AllowedItems, allowedItems.ToArray());
+                    user.SetPreference(PreferenceKind.HiddenItems, hiddenItems.ToArray());
+                    await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                }
+            }
+
+            _logger.LogInformation("Item {ItemId} {Action} for user {UserId}", itemId, allowed ? "allowed" : "no longer allowed", userId);
+
+            static bool AddOnce(List<Guid> items, Guid itemId)
+            {
+                if (items.Contains(itemId))
+                {
+                    return false;
+                }
+
+                items.Add(itemId);
+                return true;
+            }
+        }
+
+        /// <inheritdoc/>
         public async Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden)
         {
             using (await _userLock.LockAsync(userId).ConfigureAwait(false))

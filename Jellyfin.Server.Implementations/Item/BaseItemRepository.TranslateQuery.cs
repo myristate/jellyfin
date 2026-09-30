@@ -708,10 +708,13 @@ public sealed partial class BaseItemRepository
                 (e.InheritedParentalRatingValue == minScore && (e.InheritedParentalRatingSubValue ?? 0) >= minSubScore);
         }
 
+        // Items a parent allowed pass the user's restrictions
+        var allowedItemsFilter = BuildAllowedItemsFilter(context, filter);
+
         Expression<Func<BaseItemEntity, bool>>? maxParentalRatingFilter = null;
         if (filter.MaxParentalRating != null)
         {
-            maxParentalRatingFilter = BuildMaxParentalRatingFilter(context, filter.MaxParentalRating);
+            maxParentalRatingFilter = OrAllowed(allowedItemsFilter, BuildMaxParentalRatingFilter(context, filter.MaxParentalRating));
         }
 
         if (filter.HasParentalRating ?? false)
@@ -729,7 +732,7 @@ public sealed partial class BaseItemRepository
         else if (filter.BlockUnratedItems.Length > 0)
         {
             var unratedItemTypes = filter.BlockUnratedItems.Select(f => f.ToString()).ToArray();
-            Expression<Func<BaseItemEntity, bool>> unratedItemFilter = e => e.InheritedParentalRatingValue != null || !unratedItemTypes.Contains(e.UnratedType);
+            Expression<Func<BaseItemEntity, bool>> unratedItemFilter = OrAllowed(allowedItemsFilter, e => e.InheritedParentalRatingValue != null || !unratedItemTypes.Contains(e.UnratedType));
 
             if (minParentalRatingFilter != null && maxParentalRatingFilter != null)
             {
@@ -1144,14 +1147,14 @@ public sealed partial class BaseItemRepository
                 .Select(f => f.ItemId);
             var blockedByAncestor = ItemsBelowTaggedAncestor(context, blockedTagItemIds);
 
-            baseQuery = baseQuery.Where(e =>
+            baseQuery = baseQuery.Where(OrAllowed(allowedItemsFilter, e =>
                 !blockedTagItemIds.Contains(e.Id)
                 && !(e.SeriesId.HasValue && blockedTagItemIds.Contains(e.SeriesId.Value))
                 && !blockedByAncestor.Contains(e.Id)
                 && !(e.TopParentId.HasValue && blockedTagItemIds.Contains(e.TopParentId.Value))
 
                 // Live TV programs have no parents, they carry the tags of their channel
-                && !(e.ChannelId.HasValue && blockedTagItemIds.Contains(e.ChannelId.Value)));
+                && !(e.ChannelId.HasValue && blockedTagItemIds.Contains(e.ChannelId.Value))));
         }
 
         if (filter.IncludeInheritedTags.Length > 0)
@@ -1164,7 +1167,7 @@ public sealed partial class BaseItemRepository
                 .Select(f => f.ItemId);
             var allowedByAncestor = ItemsBelowTaggedAncestor(context, allowedTagItemIds);
 
-            baseQuery = baseQuery.Where(e =>
+            baseQuery = baseQuery.Where(OrAllowed(allowedItemsFilter, e =>
                 allowedTagItemIds.Contains(e.Id)
                 || (e.SeriesId.HasValue && allowedTagItemIds.Contains(e.SeriesId.Value))
                 || allowedByAncestor.Contains(e.Id)
@@ -1177,7 +1180,7 @@ public sealed partial class BaseItemRepository
                 || e.Type == personTypeName
 
                 // A playlist should be accessible to its owner regardless of allowed tags
-                || (isPlaylistOnlyQuery && e.Data!.Contains($"OwnerUserId\":\"{filter.User!.Id:N}\"")));
+                || (isPlaylistOnlyQuery && e.Data!.Contains($"OwnerUserId\":\"{filter.User!.Id:N}\""))));
         }
 
         if (filter.SeriesStatuses.Length > 0)

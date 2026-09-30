@@ -1872,6 +1872,12 @@ namespace MediaBrowser.Controller.Entities
                 return false;
             }
 
+            // A parent let this user see it, whatever its rating or tags
+            if (IsAllowedFor(user))
+            {
+                return true;
+            }
+
             if (!IsVisibleViaTags(user, skipAllowedTagsCheck))
             {
                 return false;
@@ -1933,6 +1939,23 @@ namespace MediaBrowser.Controller.Entities
             }
 
             return hidden.Contains(Id) || GetParents().Any(parent => hidden.Contains(parent.Id));
+        }
+
+        /// <summary>
+        /// Checks whether a parent let the user see this item, or one it belongs to such as its series, although their
+        /// rating or tags would hide it.
+        /// </summary>
+        /// <param name="user">The user.</param>
+        /// <returns><c>true</c> when the item is allowed for the user.</returns>
+        public bool IsAllowedFor(User user)
+        {
+            var allowed = user.GetPreferenceValues<Guid>(PreferenceKind.AllowedItems);
+            if (allowed.Length == 0)
+            {
+                return false;
+            }
+
+            return allowed.Contains(Id) || GetParents().Any(parent => allowed.Contains(parent.Id));
         }
 
         public ParentalRatingScore GetParentalRatingScore()

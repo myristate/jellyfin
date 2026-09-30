@@ -85,5 +85,11 @@ public enum PreferenceKind
     /// <summary>
     /// The id of the profile level the user is on, such as Child or Adult (Finly).
     /// </summary>
-    ProfileLevel = 1002
+    ProfileLevel = 1002,
+
+    /// <summary>
+    /// Items a parent let this user see although their rating or tags would hide them (Finly). Everything below them,
+    /// such as the episodes of a series, is let through too. Removed items stay removed.
+    /// </summary>
+    AllowedItems = 1003
 }

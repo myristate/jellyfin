@@ -1,15 +1,20 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Api.Constants;
 using Jellyfin.Api.Extensions;
 using Jellyfin.Api.Helpers;
 using Jellyfin.Data;
 using Jellyfin.Database.Implementations.Enums;
+using MediaBrowser.Common.Api;
 using MediaBrowser.Controller.Dto;
+using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
+using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Querying;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
@@ -107,6 +112,7 @@ public class HiddenItemsController : BaseJellyfinApiController
             return StatusCode(StatusCodes.Status403Forbidden, "Only the user and administrators can change this profile.");
         }
 
+        await _userManager.SetItemAllowedAsync(userId, itemId, false).ConfigureAwait(false);
         await _userManager.SetItemHiddenAsync(userId, itemId, true).ConfigureAwait(false);
         return NoContent();
     }
@@ -177,9 +183,195 @@ public class HiddenItemsController : BaseJellyfinApiController
         var members = _userManager.GetUsers().Where(u => levelId.Equals(u.GetProfileLevelId())).ToList();
         foreach (var member in members)
         {
+            await _userManager.SetItemAllowedAsync(member.Id, itemId, false).ConfigureAwait(false);
             await _userManager.SetItemHiddenAsync(member.Id, itemId, true).ConfigureAwait(false);
         }
 
         return members.Count;
     }
+
+    /// <summary>
+    /// Tells which restricted profiles can see each item, for showing parents what the children have (Finly).
+    /// </summary>
+    /// <param name="ids">The item ids.</param>
+    /// <response code="200">For each item, the ids of the restricted profiles that can see it.</response>
+    /// <returns>The profiles and what they can see.</returns>
+    [HttpGet("Items/ProfileAccess")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<ProfileAccessResult> GetProfileAccess([FromQuery, Required, ModelBinder(typeof(Jellyfin.Api.ModelBinders.CommaDelimitedCollectionModelBinder))] Guid[] ids)
+    {
+        var result = new ProfileAccessResult();
+        var profiles = _userManager.GetUsers().Where(u => u.HasContentRestrictions() || IsOnRestrictedLevel(u)).ToList();
+        foreach (var id in ids)
+        {
+            result.Items[id] = [];
+        }
+
+        foreach (var profile in profiles)
+        {
+            result.Profiles.Add(new ProfileAccessProfile
+            {
+                Id = profile.Id,
+                Name = profile.Username,
+                LevelId = profile.GetProfileLevelId()
+            });
+
+            if (ids.Length == 0)
+            {
+                continue;
+            }
+
+            var visible = _libraryManager.GetItemIds(new InternalItemsQuery(profile)
+            {
+                ItemIds = ids,
+                DtoOptions = new DtoOptions(false)
+            });
+            foreach (var id in visible)
+            {
+                if (result.Items.TryGetValue(id, out var list))
+                {
+                    list.Add(profile.Id);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Lets a profile see an item although its rating or tags would hide it, and puts it back if it was removed.
+    /// </summary>
+    /// <param name="userId">The user id.</param>
+    /// <param name="itemId">The item id.</param>
+    /// <response code="204">Item allowed.</response>
+    /// <response code="404">User or item not found.</response>
+    /// <returns>A <see cref="NoContentResult"/> on success.</returns>
+    [HttpPost("Users/{userId}/AllowedItems/{itemId}")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> AllowItem([FromRoute, Required] Guid userId, [FromRoute, Required] Guid itemId)
+    {
+        if (_userManager.GetUserById(userId) is null || _libraryManager.GetItemById(itemId) is null)
+        {
+            return NotFound();
+        }
+
+        await _userManager.SetItemAllowedAsync(userId, itemId, true).ConfigureAwait(false);
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Takes back an allowance, the profile's rating and tags decide again.
+    /// </summary>
+    /// <param name="userId">The user id.</param>
+    /// <param name="itemId">The item id.</param>
+    /// <response code="204">Allowance taken back.</response>
+    /// <response code="404">User not found.</response>
+    /// <returns>A <see cref="NoContentResult"/> on success.</returns>
+    [HttpDelete("Users/{userId}/AllowedItems/{itemId}")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> DisallowItem([FromRoute, Required] Guid userId, [FromRoute, Required] Guid itemId)
+    {
+        if (_userManager.GetUserById(userId) is null)
+        {
+            return NotFound();
+        }
+
+        await _userManager.SetItemAllowedAsync(userId, itemId, false).ConfigureAwait(false);
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Adds an item to every profile on a level. A level limited to tags, such as Child with the kids tag, gets the
+    /// tag added to the item, so profiles joining the level later have it too; other levels allow the item for each
+    /// profile on them. Either way it is put back where it was removed.
+    /// </summary>
+    /// <param name="itemId">The item id.</param>
+    /// <param name="levelId">The profile level id.</param>
+    /// <response code="200">The number of profiles on the level.</response>
+    /// <response code="404">Item or level not found.</response>
+    /// <returns>The number of profiles on the level.</returns>
+    [HttpPost("Items/{itemId}/AllowForLevel/{levelId}")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<int>> AllowForLevel([FromRoute, Required] Guid itemId, [FromRoute, Required] Guid levelId)
+    {
+        var level = _levels.GetLevel(levelId);
+        var item = _libraryManager.GetItemById(itemId);
+        if (level is null || item is null)
+        {
+            return NotFound();
+        }
+
+        var tag = level.AllowedTags.FirstOrDefault();
+        var tagged = tag is not null && !level.MaxParentalRating.HasValue && level.BlockUnratedItems.Length == 0;
+        if (tagged && !item.Tags.Contains(tag!, StringComparer.OrdinalIgnoreCase))
+        {
+            item.AddTag(tag!);
+            await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var members = _userManager.GetUsers().Where(u => levelId.Equals(u.GetProfileLevelId())).ToList();
+        foreach (var member in members)
+        {
+            if (tagged)
+            {
+                await _userManager.SetItemHiddenAsync(member.Id, itemId, false).ConfigureAwait(false);
+            }
+            else
+            {
+                await _userManager.SetItemAllowedAsync(member.Id, itemId, true).ConfigureAwait(false);
+            }
+        }
+
+        return members.Count;
+    }
+
+    private bool IsOnRestrictedLevel(Jellyfin.Database.Implementations.Entities.User user)
+    {
+        var levelId = user.GetProfileLevelId();
+        return levelId.HasValue && (_levels.GetLevel(levelId.Value)?.IsRestricted ?? false);
+    }
+}
+
+/// <summary>
+/// Which restricted profiles can see which items (Finly).
+/// </summary>
+public class ProfileAccessResult
+{
+    /// <summary>
+    /// Gets the restricted profiles.
+    /// </summary>
+    public List<ProfileAccessProfile> Profiles { get; } = [];
+
+    /// <summary>
+    /// Gets, for each item asked about, the ids of the profiles that can see it.
+    /// </summary>
+    public Dictionary<Guid, List<Guid>> Items { get; } = [];
+}
+
+/// <summary>
+/// A restricted profile.
+/// </summary>
+public class ProfileAccessProfile
+{
+    /// <summary>
+    /// Gets or sets the user id.
+    /// </summary>
+    public Guid Id { get; set; }
+
+    /// <summary>
+    /// Gets or sets the user name.
+    /// </summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets the profile level the user is on.
+    /// </summary>
+    public Guid? LevelId { get; set; }
 }
