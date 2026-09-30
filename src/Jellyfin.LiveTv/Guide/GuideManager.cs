@@ -242,7 +242,6 @@ public class GuideManager : IGuideManager
                 var isMovie = false;
                 var isSports = false;
                 var isNews = false;
-                var isKids = false;
                 var isSeries = false;
 
                 var channelPrograms = (await service.GetProgramsAsync(currentChannel.ExternalId, start, end, cancellationToken).ConfigureAwait(false)).ToList();
@@ -276,7 +275,6 @@ public class GuideManager : IGuideManager
                     isSeries |= program.IsSeries;
                     isSports |= program.IsSports;
                     isNews |= program.IsNews;
-                    isKids |= program.IsKids;
                 }
 
                 _logger.LogDebug(
@@ -308,10 +306,9 @@ public class GuideManager : IGuideManager
                 currentChannel.IsSports = isSports;
                 currentChannel.IsSeries = isSeries;
 
-                if (isKids)
-                {
-                    currentChannel.AddTag("Kids");
-                }
+                // No "Kids" tag from guide categories: tags decide what restricted profiles may watch, and one family
+                // film in the week's guide would open the whole channel, and everything else on it, to a kids profile.
+                // IsKids on the programmes still drives the guide's Kids filter.
 
                 await currentChannel.UpdateToRepositoryAsync(ItemUpdateType.MetadataImport, cancellationToken).ConfigureAwait(false);
                 await currentChannel.RefreshMetadata(
@@ -568,11 +565,6 @@ public class GuideManager : IGuideManager
         if (info.IsSports)
         {
             tags.Add("Sports");
-        }
-
-        if (info.IsKids)
-        {
-            tags.Add("Kids");
         }
 
         if (info.IsRepeat)

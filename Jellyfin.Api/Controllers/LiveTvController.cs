@@ -628,7 +628,10 @@ public class LiveTvController : BaseJellyfinApiController
     [Authorize(Policy = Policies.LiveTvAccess)]
     public async Task<ActionResult<QueryResult<BaseItemDto>>> GetPrograms([FromBody] GetProgramsDto body)
     {
-        var user = body.UserId.IsNullOrEmpty() ? null : _userManager.GetUserById(body.UserId.Value);
+        // Always filter for the signed-in user (or the requested user for administrators), like the GET endpoint,
+        // otherwise a restricted profile sees every programme by leaving out the user id
+        var userId = RequestHelpers.GetUserId(User, body.UserId);
+        var user = userId.IsEmpty() ? null : _userManager.GetUserById(userId);
 
         var query = new InternalItemsQuery(user)
         {

@@ -178,7 +178,8 @@ namespace Jellyfin.LiveTv
         {
             var program = _libraryManager.GetItemById(id);
 
-            if (program is null)
+            // A profile limited by parental controls must not see programmes of channels it can't watch
+            if (program is null || (user is not null && !program.IsVisible(user)))
             {
                 return null;
             }

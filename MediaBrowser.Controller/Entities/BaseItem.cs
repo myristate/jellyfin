@@ -24,6 +24,7 @@ using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.MediaSegments;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Providers;
@@ -1974,8 +1975,10 @@ namespace MediaBrowser.Controller.Entities
                 return false;
             }
 
+            // Items directly under a root or view are folders like libraries, which don't carry tags themselves. Live TV
+            // channels also sit under a view but are what parents tag, so they always go through the allowed tags check.
             var parent = GetParents().FirstOrDefault() ?? this;
-            if (parent is UserRootFolder or AggregateFolder or UserView)
+            if (this is not LiveTvChannel && (parent is UserRootFolder or AggregateFolder or UserView))
             {
                 return true;
             }
