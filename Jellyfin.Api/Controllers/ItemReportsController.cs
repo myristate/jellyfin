@@ -50,19 +50,34 @@ public class ItemReportsController : BaseJellyfinApiController
     /// <param name="itemId">The item id.</param>
     /// <param name="body">What is wrong.</param>
     /// <response code="200">The report.</response>
+    /// <response code="400">The problem isn't one of the known ones.</response>
     /// <response code="404">Item not found.</response>
+    /// <response code="429">Too many reports in the last hour.</response>
     /// <returns>The report as saved.</returns>
     [HttpPost("Items/{itemId}/Reports")]
     [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<ItemReport>> ReportItem([FromRoute, Required] Guid itemId, [FromBody, Required] ItemReportRequest body)
     {
+        ArgumentNullException.ThrowIfNull(body);
+        if (!Enum.IsDefined(body.Problem))
+        {
+            return BadRequest("The problem isn't one of the known ones.");
+        }
+
         var userId = User.GetUserId();
         var user = _userManager.GetUserById(userId);
         var item = _libraryManager.GetItemById(itemId);
         if (user is null || item is null || !item.IsVisible(user))
         {
             return NotFound();
+        }
+
+        if (!_reports.TryCountReport(user.Id))
+        {
+            return StatusCode(StatusCodes.Status429TooManyRequests, "Too many reports, please try again later.");
         }
 
         var name = item is Episode episode && !string.IsNullOrEmpty(episode.SeriesName)

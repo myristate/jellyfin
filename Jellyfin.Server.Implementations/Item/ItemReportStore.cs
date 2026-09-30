@@ -2,8 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
-using Jellyfin.Extensions.Json;
+using Jellyfin.Server.Implementations.StorageHelpers;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Library;
@@ -12,13 +11,19 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Server.Implementations.Item;
 
 /// <summary>
-/// Keeps the reported problems in itemreports.json in the configuration folder (Finly).
+/// Keeps the reported problems in itemreports.json in the configuration folder (Finly). A file that can't be read is
+/// set aside as itemreports.json.bad-&lt;time&gt; and a new one started.
 /// </summary>
 public sealed class ItemReportStore : IItemReportStore
 {
-    private readonly string _path;
-    private readonly ILogger<ItemReportStore> _logger;
+    /// <summary>
+    /// The most reports one person can make in an hour.
+    /// </summary>
+    public const int MaxReportsPerHour = 20;
+
+    private readonly JsonListFile<ItemReport> _file;
     private readonly object _lock = new();
+    private readonly Dictionary<Guid, Queue<DateTime>> _recentReports = [];
     private List<ItemReport>? _reports;
 
     /// <summary>
@@ -28,8 +33,39 @@ public sealed class ItemReportStore : IItemReportStore
     /// <param name="logger">The logger.</param>
     public ItemReportStore(IApplicationPaths appPaths, ILogger<ItemReportStore> logger)
     {
-        _path = Path.Combine(appPaths.ConfigurationDirectoryPath, "itemreports.json");
-        _logger = logger;
+        _file = new JsonListFile<ItemReport>(Path.Combine(appPaths.ConfigurationDirectoryPath, "itemreports.json"), logger);
+    }
+
+    /// <summary>
+    /// Gets or sets the clock the report limit runs on, replaced in tests.
+    /// </summary>
+    internal TimeProvider TimeProvider { get; set; } = TimeProvider.System;
+
+    /// <inheritdoc />
+    public bool TryCountReport(Guid userId)
+    {
+        var now = TimeProvider.GetUtcNow().UtcDateTime;
+        lock (_lock)
+        {
+            if (!_recentReports.TryGetValue(userId, out var times))
+            {
+                times = new Queue<DateTime>();
+                _recentReports[userId] = times;
+            }
+
+            while (times.Count > 0 && now - times.Peek() >= TimeSpan.FromHours(1))
+            {
+                times.Dequeue();
+            }
+
+            if (times.Count >= MaxReportsPerHour)
+            {
+                return false;
+            }
+
+            times.Enqueue(now);
+            return true;
+        }
     }
 
     /// <inheritdoc />
@@ -114,29 +150,13 @@ public sealed class ItemReportStore : IItemReportStore
             return _reports;
         }
 
-        if (File.Exists(_path))
-        {
-            try
-            {
-                _reports = JsonSerializer.Deserialize<List<ItemReport>>(File.ReadAllText(_path), JsonDefaults.Options) ?? [];
-                return _reports;
-            }
-            catch (Exception ex) when (ex is IOException or JsonException)
-            {
-                _logger.LogError(ex, "Unable to read the reported problems from {Path}", _path);
-            }
-        }
-
-        _reports = [];
+        _reports = _file.Read() ?? [];
         return _reports;
     }
 
     private void Write(List<ItemReport> reports)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var temp = _path + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(reports, JsonDefaults.Options));
-        File.Move(temp, _path, true);
+        _file.Write(reports);
         _reports = reports;
     }
 }
