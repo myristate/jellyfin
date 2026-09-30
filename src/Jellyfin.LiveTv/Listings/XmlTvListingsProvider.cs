@@ -187,15 +187,9 @@ namespace Jellyfin.LiveTv.Listings
                 if (Path.GetExtension(originalUrl.AsSpan().LeftPart('?')).Equals(".gz", StringComparison.OrdinalIgnoreCase) ||
                     Path.GetExtension(originalUrl.AsSpan().LeftPart('?')).Equals(".gzip", StringComparison.OrdinalIgnoreCase))
                 {
-                    try
-                    {
-                        using var reader = new GZipStream(stream, CompressionMode.Decompress);
-                        await reader.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "Error extracting from gz file {File}", originalUrl);
-                    }
+                    // A damaged archive throws to the caller, which keeps the last good guide instead of a partial one
+                    using var reader = new GZipStream(stream, CompressionMode.Decompress);
+                    await reader.CopyToAsync(fileStream, cancellationToken).ConfigureAwait(false);
                 }
                 else
                 {

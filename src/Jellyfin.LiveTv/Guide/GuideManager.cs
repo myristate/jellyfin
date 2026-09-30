@@ -151,6 +151,14 @@ public class GuideManager : IGuideManager
             progress.Report(100 * percent);
         }
 
+        // A tuner that can't be reached during the refresh (rebooting, updating firmware) returns no channels rather than
+        // an error. Cleaning then would delete every channel and programme, and with them the tags parents set.
+        if (cleanDatabase && newChannelIdList.Count == 0)
+        {
+            _logger.LogWarning("No Live TV channels were found, keeping the existing channels and programmes");
+            cleanDatabase = false;
+        }
+
         if (cleanDatabase)
         {
             CleanDatabase(newChannelIdList.ToArray(), [BaseItemKind.LiveTvChannel], progress, cancellationToken);
