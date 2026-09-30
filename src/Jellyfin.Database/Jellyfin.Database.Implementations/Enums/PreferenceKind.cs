@@ -103,5 +103,11 @@ public enum PreferenceKind
     /// Set, to the UTC ticks it happened, when too many wrong PINs turned PIN sign in off for the user (Finly). Signing
     /// in with the password, or an administrator setting or removing the PIN, turns it back on.
     /// </summary>
-    SignInPinDisabled = 1005
+    SignInPinDisabled = 1005,
+
+    /// <summary>
+    /// The provider ids (IMDb, TMDB, TVDB) of the items in <see cref="HiddenItems"/> and <see cref="AllowedItems"/>
+    /// (Finly), so they can be found again when a file is moved or renamed and the library gives the item a new id.
+    /// </summary>
+    ItemProviderIds = 1006
 }

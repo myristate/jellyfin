@@ -126,8 +126,9 @@ namespace MediaBrowser.Controller.Library
         /// <param name="userId">The user id.</param>
         /// <param name="itemId">The item id.</param>
         /// <param name="hidden">Whether the item is removed.</param>
+        /// <param name="identity">What identifies the item apart from its id, remembered to find it again when it moves.</param>
         /// <returns>A task representing the change.</returns>
-        Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden);
+        Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden, ItemIdentity? identity = null);
 
         /// <summary>
         /// Lets the user see an item although their rating or tags would hide it, or takes that back. Allowing an item
@@ -136,8 +137,20 @@ namespace MediaBrowser.Controller.Library
         /// <param name="userId">The user id.</param>
         /// <param name="itemId">The item id.</param>
         /// <param name="allowed">Whether the item is allowed.</param>
+        /// <param name="identity">What identifies the item apart from its id, remembered to find it again when it moves.</param>
         /// <returns>A task representing the change.</returns>
-        Task SetItemAllowedAsync(Guid userId, Guid itemId, bool allowed);
+        Task SetItemAllowedAsync(Guid userId, Guid itemId, bool allowed, ItemIdentity? identity = null);
+
+        /// <summary>
+        /// Brings the user's removed and allowed items up to date with the library (Finly): items that moved get their
+        /// new id, and items missing for longer than <paramref name="gracePeriod"/> are dropped.
+        /// </summary>
+        /// <param name="userId">The user id.</param>
+        /// <param name="missingItems">The listed items no longer in the library, each with the id of the same item found
+        /// again under a new id, or <c>null</c> when it wasn't found.</param>
+        /// <param name="gracePeriod">How long an item may be missing before it is dropped.</param>
+        /// <returns>A task representing the change.</returns>
+        Task RelinkItemsAsync(Guid userId, IReadOnlyDictionary<Guid, Guid?> missingItems, TimeSpan gracePeriod);
 
         /// <summary>
         /// Resets the password.

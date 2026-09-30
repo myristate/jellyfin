@@ -102,7 +102,8 @@ public class HiddenItemsController : BaseJellyfinApiController
     public async Task<ActionResult> HideItem([FromRoute, Required] Guid userId, [FromRoute, Required] Guid itemId)
     {
         var user = _userManager.GetUserById(userId);
-        if (user is null || _libraryManager.GetItemById(itemId) is null)
+        var item = _libraryManager.GetItemById(itemId);
+        if (user is null || item is null)
         {
             return NotFound();
         }
@@ -112,7 +113,7 @@ public class HiddenItemsController : BaseJellyfinApiController
             return StatusCode(StatusCodes.Status403Forbidden, "Only the user and administrators can change this profile.");
         }
 
-        await RemoveFromProfileAsync(userId, itemId).ConfigureAwait(false);
+        await RemoveFromProfileAsync(userId, itemId, ItemIdentity.FromItem(item)).ConfigureAwait(false);
         return NoContent();
     }
 
@@ -168,7 +169,8 @@ public class HiddenItemsController : BaseJellyfinApiController
     public async Task<ActionResult<int>> HideFromLevel([FromRoute, Required] Guid itemId, [FromRoute, Required] Guid levelId)
     {
         var level = _levels.GetLevel(levelId);
-        if (level is null || _libraryManager.GetItemById(itemId) is null)
+        var item = _libraryManager.GetItemById(itemId);
+        if (level is null || item is null)
         {
             return NotFound();
         }
@@ -182,7 +184,7 @@ public class HiddenItemsController : BaseJellyfinApiController
         var members = _userManager.GetUsers().Where(u => levelId.Equals(u.GetProfileLevelId())).ToList();
         foreach (var member in members)
         {
-            await RemoveFromProfileAsync(member.Id, itemId).ConfigureAwait(false);
+            await RemoveFromProfileAsync(member.Id, itemId, ItemIdentity.FromItem(item)).ConfigureAwait(false);
         }
 
         return members.Count;
@@ -192,7 +194,7 @@ public class HiddenItemsController : BaseJellyfinApiController
     /// Takes an item out of a profile: an item only there because it was allowed stops being allowed, and anything the
     /// profile would still see goes on its removed list.
     /// </summary>
-    private async Task RemoveFromProfileAsync(Guid userId, Guid itemId)
+    private async Task RemoveFromProfileAsync(Guid userId, Guid itemId, ItemIdentity? identity)
     {
         await _userManager.SetItemAllowedAsync(userId, itemId, false).ConfigureAwait(false);
 
@@ -204,7 +206,7 @@ public class HiddenItemsController : BaseJellyfinApiController
         }).Count > 0;
         if (stillVisible)
         {
-            await _userManager.SetItemHiddenAsync(userId, itemId, true).ConfigureAwait(false);
+            await _userManager.SetItemHiddenAsync(userId, itemId, true, identity).ConfigureAwait(false);
         }
     }
 
@@ -271,12 +273,13 @@ public class HiddenItemsController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult> AllowItem([FromRoute, Required] Guid userId, [FromRoute, Required] Guid itemId)
     {
-        if (_userManager.GetUserById(userId) is null || _libraryManager.GetItemById(itemId) is null)
+        var item = _libraryManager.GetItemById(itemId);
+        if (_userManager.GetUserById(userId) is null || item is null)
         {
             return NotFound();
         }
 
-        await _userManager.SetItemAllowedAsync(userId, itemId, true).ConfigureAwait(false);
+        await _userManager.SetItemAllowedAsync(userId, itemId, true, ItemIdentity.FromItem(item)).ConfigureAwait(false);
         return NoContent();
     }
 
@@ -343,7 +346,7 @@ public class HiddenItemsController : BaseJellyfinApiController
             }
             else
             {
-                await _userManager.SetItemAllowedAsync(member.Id, itemId, true).ConfigureAwait(false);
+                await _userManager.SetItemAllowedAsync(member.Id, itemId, true, ItemIdentity.FromItem(item)).ConfigureAwait(false);
             }
         }
 

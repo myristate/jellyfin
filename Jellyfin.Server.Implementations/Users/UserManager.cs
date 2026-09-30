@@ -549,7 +549,7 @@ namespace Jellyfin.Server.Implementations.Users
         }
 
         /// <inheritdoc/>
-        public async Task SetItemAllowedAsync(Guid userId, Guid itemId, bool allowed)
+        public async Task SetItemAllowedAsync(Guid userId, Guid itemId, bool allowed, ItemIdentity? identity = null)
         {
             using (await _userLock.LockAsync(userId).ConfigureAwait(false))
             {
@@ -567,13 +567,14 @@ namespace Jellyfin.Server.Implementations.Users
                     var changed = allowed
                         ? AddOnce(allowedItems, itemId) | hiddenItems.Remove(itemId)
                         : allowedItems.Remove(itemId);
-                    if (!changed)
+                    if (!changed && (!allowed || identity is null))
                     {
                         return;
                     }
 
                     user.SetPreference(PreferenceKind.AllowedItems, allowedItems.ToArray());
                     user.SetPreference(PreferenceKind.HiddenItems, hiddenItems.ToArray());
+                    ItemRecord.Remember(user, itemId, allowed ? identity : null);
                     await dbContext.SaveChangesAsync().ConfigureAwait(false);
                 }
             }
@@ -593,7 +594,7 @@ namespace Jellyfin.Server.Implementations.Users
         }
 
         /// <inheritdoc/>
-        public async Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden)
+        public async Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden, ItemIdentity? identity = null)
         {
             using (await _userLock.LockAsync(userId).ConfigureAwait(false))
             {
@@ -607,26 +608,124 @@ namespace Jellyfin.Server.Implementations.Users
                         ?? throw new ResourceNotFoundException(nameof(userId));
 
                     var items = user.GetPreferenceValues<Guid>(PreferenceKind.HiddenItems).ToList();
-                    if (hidden == items.Contains(itemId))
+                    if (hidden == items.Contains(itemId) && (!hidden || identity is null))
                     {
                         return;
                     }
 
-                    if (hidden)
+                    if (hidden && !items.Contains(itemId))
                     {
                         items.Add(itemId);
                     }
-                    else
+                    else if (!hidden)
                     {
                         items.Remove(itemId);
                     }
 
                     user.SetPreference(PreferenceKind.HiddenItems, items.ToArray());
+                    ItemRecord.Remember(user, itemId, hidden ? identity : null);
                     await dbContext.SaveChangesAsync().ConfigureAwait(false);
                 }
             }
 
             _logger.LogInformation("Item {ItemId} {Action} the library of user {UserId}", itemId, hidden ? "removed from" : "put back in", userId);
+        }
+
+        /// <inheritdoc/>
+        public async Task RelinkItemsAsync(Guid userId, IReadOnlyDictionary<Guid, Guid?> missingItems, TimeSpan gracePeriod)
+        {
+            ArgumentNullException.ThrowIfNull(missingItems);
+            var now = TimeProvider.GetUtcNow().UtcDateTime;
+            using (await _userLock.LockAsync(userId).ConfigureAwait(false))
+            {
+                var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+                await using (dbContext.ConfigureAwait(false))
+                {
+                    var user = await UserQuery(dbContext)
+                        .AsTracking()
+                        .FirstOrDefaultAsync(u => u.Id == userId)
+                        .ConfigureAwait(false);
+                    if (user is null)
+                    {
+                        return;
+                    }
+
+                    var hidden = user.GetPreferenceValues<Guid>(PreferenceKind.HiddenItems).ToList();
+                    var allowed = user.GetPreferenceValues<Guid>(PreferenceKind.AllowedItems).ToList();
+                    var records = ItemRecord.Read(user);
+                    var changes = new List<string>();
+
+                    foreach (var itemId in hidden.Concat(allowed).Distinct().ToList())
+                    {
+                        records.TryGetValue(itemId, out var record);
+                        if (!missingItems.TryGetValue(itemId, out var replacement))
+                        {
+                            // Still in the library: forget that it was ever missing
+                            if (record?.MissingSince is not null)
+                            {
+                                records[itemId] = record with { MissingSince = null };
+                            }
+
+                            continue;
+                        }
+
+                        if (replacement.HasValue)
+                        {
+                            // Moved or renamed: the same film or show under its new id
+                            Replace(hidden, itemId, replacement.Value);
+                            Replace(allowed, itemId, replacement.Value);
+                            records.Remove(itemId);
+                            records[replacement.Value] = new ItemRecord(replacement.Value, record?.Identity, null);
+                            changes.Add(string.Format(CultureInfo.InvariantCulture, "{0:N} -> {1:N}", itemId, replacement.Value));
+                        }
+                        else if (record?.MissingSince is DateTime missingSince && now - missingSince >= gracePeriod)
+                        {
+                            // Gone for good
+                            hidden.Remove(itemId);
+                            allowed.Remove(itemId);
+                            records.Remove(itemId);
+                            changes.Add(string.Format(CultureInfo.InvariantCulture, "{0:N} dropped", itemId));
+                        }
+                        else if (record?.MissingSince is null)
+                        {
+                            // Maybe only for now, such as a drive that is offline
+                            records[itemId] = new ItemRecord(itemId, record?.Identity, now);
+                        }
+                    }
+
+                    user.SetPreference(PreferenceKind.HiddenItems, hidden.ToArray());
+                    user.SetPreference(PreferenceKind.AllowedItems, allowed.ToArray());
+                    ItemRecord.Write(user, records.Values);
+                    if (!dbContext.ChangeTracker.HasChanges())
+                    {
+                        return;
+                    }
+
+                    await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                    if (changes.Count > 0)
+                    {
+                        _logger.LogInformation("Removed and allowed items of user {UserId} relinked: {Changes}", userId, string.Join(", ", changes));
+                    }
+                }
+            }
+
+            static void Replace(List<Guid> items, Guid oldId, Guid newId)
+            {
+                var index = items.IndexOf(oldId);
+                if (index < 0)
+                {
+                    return;
+                }
+
+                if (items.Contains(newId))
+                {
+                    items.RemoveAt(index);
+                }
+                else
+                {
+                    items[index] = newId;
+                }
+            }
         }
 
         private async Task PublishUserUpdatedAsync(User user)
