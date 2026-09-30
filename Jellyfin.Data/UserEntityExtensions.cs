@@ -171,14 +171,28 @@ public static class UserEntityExtensions
     {
         ArgumentNullException.ThrowIfNull(entity);
 
+        return entity.HasRestrictionRules()
+            || entity.GetPreference(PreferenceKind.HiddenItems).Length > 0
+            || entity.GetPreference(PreferenceKind.AllowedItems).Length > 0;
+    }
+
+    /// <summary>
+    /// Checks whether a library, parental rating or tag rule keeps content from this user (Finly). Unlike
+    /// <see cref="HasContentRestrictions"/> the items the user or a parent removed or allowed one by one don't count,
+    /// so an adult who removed a film isn't taken for a restricted profile.
+    /// </summary>
+    /// <param name="entity">The user to check.</param>
+    /// <returns><c>True</c> if a rule hides some content in the library from this user.</returns>
+    public static bool HasRestrictionRules(this User entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+
         return !entity.HasPermission(PermissionKind.EnableAllFolders)
             || entity.GetPreference(PreferenceKind.BlockedMediaFolders).Length > 0
             || entity.MaxParentalRatingScore.HasValue
             || entity.GetPreference(PreferenceKind.BlockedTags).Length > 0
             || entity.GetPreference(PreferenceKind.AllowedTags).Length > 0
-            || entity.GetPreference(PreferenceKind.BlockUnratedItems).Length > 0
-            || entity.GetPreference(PreferenceKind.HiddenItems).Length > 0
-            || entity.GetPreference(PreferenceKind.AllowedItems).Length > 0;
+            || entity.GetPreference(PreferenceKind.BlockUnratedItems).Length > 0;
     }
 
     /// <summary>
