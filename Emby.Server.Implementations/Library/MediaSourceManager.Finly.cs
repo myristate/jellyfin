@@ -236,6 +236,64 @@ namespace Emby.Server.Implementations.Library
             }
         }
 
+        /// <inheritdoc />
+        public async Task<bool> CloseUnreadLiveStream(string id, ILiveStream liveStream, TimeSpan minimumUnreadTime)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(id);
+            ArgumentNullException.ThrowIfNull(liveStream);
+
+            using (await _liveStreamLocker.LockAsync().ConfigureAwait(false))
+            {
+                if (!_openStreams.TryGetValue(id, out var current) || !ReferenceEquals(current, liveStream))
+                {
+                    return false;
+                }
+
+                // Checked again under the stream's own lock, which also stops anyone starting to read it now
+                if (!liveStream.TryStopNewReaders(minimumUnreadTime))
+                {
+                    return false;
+                }
+
+                _logger.LogWarning(
+                    "Closing live stream {LiveStreamId} of {Channel}: nobody has read it for {Seconds:0} seconds, {ConsumerCount} consumers never closed it",
+                    id,
+                    GetChannelName(id),
+                    (DateTime.UtcNow - (liveStream.LastReaderLeftUtc ?? DateTime.UtcNow)).TotalSeconds,
+                    liveStream.ConsumerCount);
+                await CloseOpenLiveStream(id, liveStream).ConfigureAwait(false);
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Gets the name of the channel a live stream is of, for the log.
+        /// </summary>
+        private string GetChannelName(string id)
+        {
+            // The open token is "{provider}_{item type}_{item id}_{media source id}"
+            if (_liveStreamOpenTokens.TryGetValue(id, out var openToken))
+            {
+                var parts = openToken.Split(LiveStreamIdDelimiter);
+                if (parts.Length > 2 && Guid.TryParse(parts[2], out var itemId))
+                {
+                    var name = _libraryManager.GetItemById(itemId)?.Name;
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        return name;
+                    }
+                }
+            }
+
+            return "an unknown channel";
+        }
+
+        /// <summary>
+        /// Gets whether someone is reading a live stream, which is then never closed for having no consumers.
+        /// </summary>
+        private static bool IsBeingRead(ILiveStream liveStream)
+            => liveStream.ActiveReaderCount > 0;
+
         /// <summary>
         /// Closes every open stream straight away, when the server shuts down.
         /// </summary>

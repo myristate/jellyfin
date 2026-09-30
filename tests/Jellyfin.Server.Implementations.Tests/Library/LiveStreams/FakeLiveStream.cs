@@ -45,6 +45,13 @@ public sealed class FakeLiveStream : ILiveStream
 
     public bool IsClosed => CloseCount > 0;
 
+    public int ActiveReaderCount { get; set; }
+
+    public DateTime? LastReaderLeftUtc { get; set; } = DateTime.UtcNow;
+
+    public bool TryStopNewReaders(TimeSpan minimumUnreadTime)
+        => ActiveReaderCount == 0 && DateTime.UtcNow - LastReaderLeftUtc >= minimumUnreadTime;
+
     public Task Open(CancellationToken openCancellationToken) => Task.CompletedTask;
 
     public Task Close()

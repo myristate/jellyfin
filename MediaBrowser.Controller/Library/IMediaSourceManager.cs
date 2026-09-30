@@ -110,6 +110,16 @@ namespace MediaBrowser.Controller.Library
         IReadOnlyCollection<KeyValuePair<string, ILiveStream>> GetOpenLiveStreams() => null;
 
         /// <summary>
+        /// Closes a live stream straight away whatever its consumer count, if it is still open and nobody is reading it
+        /// (Finly). Used for streams whose viewers have gone without closing them.
+        /// </summary>
+        /// <param name="id">The live stream id.</param>
+        /// <param name="liveStream">The stream expected under that id.</param>
+        /// <param name="minimumUnreadTime">How long nobody must have been reading it.</param>
+        /// <returns>Whether it was closed.</returns>
+        Task<bool> CloseUnreadLiveStream(string id, ILiveStream liveStream, TimeSpan minimumUnreadTime) => Task.FromResult(false);
+
+        /// <summary>
         /// Gets the live stream.
         /// </summary>
         /// <param name="id">The identifier.</param>

@@ -17,7 +17,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.LiveTv.TunerHosts
 {
-    public class LiveStream : ILiveStream
+    public partial class LiveStream : ILiveStream
     {
         private readonly IConfigurationManager _configurationManager;
         private bool _disposed;
@@ -144,6 +144,21 @@ namespace Jellyfin.LiveTv.TunerHosts
         }
 
         public Stream GetStream()
+        {
+            // (Finly) Count the reader for as long as it reads, so a stream nobody reads can be closed
+            BeginReading();
+            try
+            {
+                return new LiveStreamReader(OpenBufferReader(), EndReading);
+            }
+            catch
+            {
+                EndReading();
+                throw;
+            }
+        }
+
+        private Stream OpenBufferReader()
         {
             var stream = new FileStream(
                 TempFilePath,

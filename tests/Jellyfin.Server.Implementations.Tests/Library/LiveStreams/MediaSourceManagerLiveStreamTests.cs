@@ -207,6 +207,49 @@ public sealed class MediaSourceManagerLiveStreamTests : IDisposable
         Assert.True(watchedStream.IsClosed);
     }
 
+    [Fact]
+    public async Task CloseUnreadLiveStream_ClosesAStreamNobodyReadsWhateverItsConsumers()
+    {
+        var opened = await Open("bbc1");
+        var id = opened.Item1.MediaSource.LiveStreamId;
+        var liveStream = (FakeLiveStream)_manager.GetLiveStreamInfo(id);
+        liveStream.LastReaderLeftUtc = DateTime.UtcNow.AddMinutes(-5);
+
+        Assert.True(await _manager.CloseUnreadLiveStream(id, liveStream, TimeSpan.FromMinutes(1)));
+
+        Assert.True(liveStream.IsClosed);
+        Assert.Null(_manager.GetLiveStreamInfo(id));
+    }
+
+    [Fact]
+    public async Task CloseUnreadLiveStream_NeverClosesAStreamBeingRead()
+    {
+        var opened = await Open("bbc1");
+        var id = opened.Item1.MediaSource.LiveStreamId;
+        var liveStream = (FakeLiveStream)_manager.GetLiveStreamInfo(id);
+        liveStream.ActiveReaderCount = 1;
+        liveStream.LastReaderLeftUtc = DateTime.UtcNow.AddHours(-3);
+
+        Assert.False(await _manager.CloseUnreadLiveStream(id, liveStream, TimeSpan.Zero));
+
+        Assert.False(liveStream.IsClosed);
+        Assert.Same(liveStream, _manager.GetLiveStreamInfo(id));
+    }
+
+    [Fact]
+    public async Task Open_TunerBusy_DoesNotCloseAnIdleStreamSomeoneStillReads()
+    {
+        var idle = await OpenAndLeave("itv");
+        idle.ActiveReaderCount = 1;
+        _provider.OpenChannel = (channel, _, _) => channel == "bbc1"
+            ? Task.FromException<ILiveStream>(new LiveTvConflictException("805"))
+            : Task.FromResult<ILiveStream>(new FakeLiveStream(channel));
+
+        await Assert.ThrowsAsync<LiveTvConflictException>(() => Open("bbc1"));
+
+        Assert.False(idle.IsClosed);
+    }
+
     private Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> Open(string channel)
         => _manager.OpenLiveStreamInternal(new LiveStreamRequest { OpenToken = FakeMediaSourceProvider.OpenToken(channel) }, CancellationToken.None);
 
