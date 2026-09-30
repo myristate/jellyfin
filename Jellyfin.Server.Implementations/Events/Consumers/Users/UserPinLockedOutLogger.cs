@@ -43,8 +43,11 @@ namespace Jellyfin.Server.Implementations.Events.Consumers.Users
         }
 
         private static string Describe(TimeSpan lockout)
-            => lockout.TotalMinutes >= 1
-                ? string.Format(CultureInfo.InvariantCulture, "{0:0} minutes", Math.Ceiling(lockout.TotalMinutes))
-                : string.Format(CultureInfo.InvariantCulture, "{0:0} seconds", Math.Ceiling(lockout.TotalSeconds));
+        {
+            var (count, unit) = lockout.TotalMinutes >= 1
+                ? (Math.Ceiling(lockout.TotalMinutes), "minute")
+                : (Math.Ceiling(lockout.TotalSeconds), "second");
+            return string.Format(CultureInfo.InvariantCulture, "{0:0} {1}{2}", count, unit, count == 1 ? string.Empty : "s");
+        }
     }
 }

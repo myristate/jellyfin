@@ -141,7 +141,7 @@ namespace Jellyfin.Server.Implementations.Users
             }
             catch (Exception ex) when (ex is FormatException or ArgumentException)
             {
-                return null;
+                // Not a hash, as good as no PIN
             }
 
             return null;
