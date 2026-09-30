@@ -63,6 +63,9 @@ namespace Emby.Server.Implementations.Library
         /// </summary>
         private static readonly TimeSpan LiveStreamCloseGracePeriod = TimeSpan.FromSeconds(20);
 
+        // Counts grace period waits per live stream id, so only the latest wait may close the stream
+        private readonly ConcurrentDictionary<string, int> _closeGenerations = new(StringComparer.OrdinalIgnoreCase);
+
         private readonly ConcurrentDictionary<string, ILiveStream> _openStreams = new ConcurrentDictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase);
         private readonly AsyncNonKeyedLocker _liveStreamLocker = new(1);
         private readonly JsonSerializerOptions _jsonOptions = JsonDefaults.Options;
@@ -1050,7 +1053,8 @@ namespace Emby.Server.Implementations.Library
                             // Keep the tuner on the channel for a moment: flicking back, a client retry or a guide preview
                             // turning into full screen then shares the running stream instead of tuning from scratch
                             _logger.LogInformation("Keeping live stream {0} open for {1} seconds", id, LiveStreamCloseGracePeriod.TotalSeconds);
-                            _ = CloseAfterGracePeriod(id, liveStream);
+                            var generation = _closeGenerations.AddOrUpdate(id, 1, (_, value) => value + 1);
+                            _ = CloseAfterGracePeriod(id, liveStream, generation);
                             return;
                         }
 
@@ -1060,7 +1064,7 @@ namespace Emby.Server.Implementations.Library
             }
         }
 
-        private async Task CloseAfterGracePeriod(string id, ILiveStream liveStream)
+        private async Task CloseAfterGracePeriod(string id, ILiveStream liveStream, int generation)
         {
             try
             {
@@ -1068,8 +1072,10 @@ namespace Emby.Server.Implementations.Library
 
                 using (await _liveStreamLocker.LockAsync().ConfigureAwait(false))
                 {
-                    // Only close it if nobody started watching it again in the meantime
-                    if (_openStreams.TryGetValue(id, out var current) && ReferenceEquals(current, liveStream) && liveStream.ConsumerCount <= 0)
+                    // Only close it if nobody started watching it again in the meantime, and only from the latest wait:
+                    // a wait from an earlier close would otherwise cut a later grace period short
+                    if (_closeGenerations.TryGetValue(id, out var latest) && latest == generation
+                        && _openStreams.TryGetValue(id, out var current) && ReferenceEquals(current, liveStream) && liveStream.ConsumerCount <= 0)
                     {
                         await CloseOpenLiveStream(id, liveStream).ConfigureAwait(false);
                     }
@@ -1099,6 +1105,7 @@ namespace Emby.Server.Implementations.Library
         private async Task CloseOpenLiveStream(string id, ILiveStream liveStream)
         {
             _openStreams.TryRemove(id, out _);
+            _closeGenerations.TryRemove(id, out _);
 
             _logger.LogInformation("Closing live stream {0}", id);
 
