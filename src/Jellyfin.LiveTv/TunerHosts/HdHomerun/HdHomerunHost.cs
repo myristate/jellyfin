@@ -37,6 +37,7 @@ namespace Jellyfin.LiveTv.TunerHosts.HdHomerun
         private readonly IServerApplicationHost _appHost;
         private readonly ISocketFactory _socketFactory;
         private readonly IStreamHelper _streamHelper;
+        private readonly HdHomerunTunerStatus _tunerStatus;
 
         private readonly JsonSerializerOptions _jsonOptions;
 
@@ -56,6 +57,7 @@ namespace Jellyfin.LiveTv.TunerHosts.HdHomerun
             _appHost = appHost;
             _socketFactory = socketFactory;
             _streamHelper = streamHelper;
+            _tunerStatus = new HdHomerunTunerStatus(httpClientFactory, logger);
 
             _jsonOptions = new JsonSerializerOptions(JsonDefaults.Options);
             _jsonOptions.Converters.Add(new JsonBoolNumberConverter());
@@ -395,6 +397,14 @@ namespace Jellyfin.LiveTv.TunerHosts.HdHomerun
                 {
                     throw new LiveTvConflictException("HDHomeRun simultaneous stream limit has been reached.");
                 }
+            }
+
+            // (Finly) Ask the tuner which tuners are in use, which includes other servers sharing it, so a busy tuner
+            // is known at once instead of from the stream request failing
+            var usage = await _tunerStatus.GetUsage(GetApiUrl(tunerHost), cancellationToken).ConfigureAwait(false);
+            if (usage is { Free: <= 0 } busy)
+            {
+                throw new LiveTvConflictException($"All {busy.Total} tuners are in use");
             }
 
             var profile = streamId.AsSpan().LeftPart('_').ToString();
