@@ -93,6 +93,21 @@ namespace Jellyfin.Server.Implementations.Users
             });
         }
 
+        /// <summary>
+        /// Hashes a sign in PIN the same way as passwords.
+        /// </summary>
+        /// <param name="pin">The PIN.</param>
+        /// <returns>The hash to store.</returns>
+        public string HashPin(string pin) => _cryptographyProvider.CreatePasswordHash(pin).ToString();
+
+        /// <summary>
+        /// Checks a sign in PIN against its stored hash.
+        /// </summary>
+        /// <param name="hash">The stored hash.</param>
+        /// <param name="pin">The PIN entered.</param>
+        /// <returns><c>true</c> when the PIN matches.</returns>
+        public bool VerifyPin(string hash, string pin) => _cryptographyProvider.Verify(PasswordHash.Parse(hash), pin);
+
         /// <inheritdoc />
         public Task ChangePassword(User user, string newPassword)
         {

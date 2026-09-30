@@ -68,5 +68,11 @@ public enum PreferenceKind
     /// <summary>
     /// A list of allowed tags.
     /// </summary>
-    AllowedTags = 12
+    AllowedTags = 12,
+
+    /// <summary>
+    /// The hash of the user's sign in PIN (Finly). Numbered well clear of upstream's kinds so a future upstream kind
+    /// can't collide with it.
+    /// </summary>
+    SignInPinHash = 1000
 }

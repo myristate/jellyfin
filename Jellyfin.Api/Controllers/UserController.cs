@@ -259,6 +259,63 @@ public class UserController : BaseJellyfinApiController
     }
 
     /// <summary>
+    /// Sets or removes a user's sign in PIN (Finly). A PIN signs the user in on the home network in place of their
+    /// password.
+    /// </summary>
+    /// <param name="userId">The user id.</param>
+    /// <param name="request">The <see cref="UpdateUserPin"/> request.</param>
+    /// <response code="204">PIN set or removed.</response>
+    /// <response code="400">The PIN isn't valid.</response>
+    /// <response code="403">User is not allowed to update the PIN.</response>
+    /// <response code="404">User not found.</response>
+    /// <returns>A <see cref="NoContentResult"/> indicating success, or the reason it failed.</returns>
+    [HttpPost("Pin")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> UpdateUserPin(
+        [FromQuery] Guid? userId,
+        [FromBody, Required] UpdateUserPin request)
+    {
+        var requestUserId = userId ?? User.GetUserId();
+        var user = _userManager.GetUserById(requestUserId);
+        if (user is null)
+        {
+            return NotFound();
+        }
+
+        if (!RequestHelpers.AssertCanUpdateUser(User, user, true))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, "User is not allowed to update the PIN.");
+        }
+
+        if (!request.ResetPin && string.IsNullOrEmpty(request.NewPin))
+        {
+            return BadRequest("A PIN must be 4 digits.");
+        }
+
+        // Like the password: changing your own needs your current password or PIN, an administrator can change anyone's
+        if (!User.IsInRole(UserRoles.Administrator) || User.GetUserId().Equals(user.Id))
+        {
+            var success = await _userManager.AuthenticateUser(
+                user.Username,
+                request.CurrentPw ?? string.Empty,
+                HttpContext.GetNormalizedRemoteIP().ToString(),
+                false).ConfigureAwait(false);
+
+            if (success is null)
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, "Invalid user or password entered.");
+            }
+        }
+
+        await _userManager.SetPinAsync(user.Id, request.ResetPin ? null : request.NewPin).ConfigureAwait(false);
+        return NoContent();
+    }
+
+    /// <summary>
     /// Updates a user's password.
     /// </summary>
     /// <param name="userId">The user id.</param>
@@ -431,6 +488,14 @@ public class UserController : BaseJellyfinApiController
             {
                 return StatusCode(StatusCodes.Status403Forbidden, "There must be at least one user in the system with administrative access.");
             }
+        }
+
+        // There must always be an administrator with a password
+        if (!newPolicy.IsAdministrator
+            && user.HasPermission(PermissionKind.IsAdministrator)
+            && !_userManager.HasOtherAdministratorWithPassword(user.Id))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, "There must always be an administrator with a password. Give another administrator a password first.");
         }
 
         // If disabling

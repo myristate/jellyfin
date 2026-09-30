@@ -52,6 +52,7 @@ namespace Jellyfin.Server.Implementations.Users
         private readonly IServerConfigurationManager _serverConfigurationManager;
 
         private readonly LockHelper _userLock = new();
+        private readonly SignInPinAttempts _pinAttempts = new();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="UserManager"/> class.
@@ -407,12 +408,54 @@ namespace Jellyfin.Server.Implementations.Users
                             nameof(userId));
                     }
 
+                    if (user.HasPermission(PermissionKind.IsAdministrator) && !HasOtherAdministratorWithPassword(user.Id))
+                    {
+                        throw new ArgumentException(
+                            string.Format(
+                                CultureInfo.InvariantCulture,
+                                "The user '{0}' cannot be deleted because there must always be an administrator with a password. Give another administrator a password first.",
+                                user.Username),
+                            nameof(userId));
+                    }
+
                     dbContext.Users.Remove(user);
                     await dbContext.SaveChangesAsync().ConfigureAwait(false);
                 }
             }
 
             await _eventManager.PublishAsync(new UserDeletedEventArgs(user)).ConfigureAwait(false);
+        }
+
+        /// <inheritdoc/>
+        public bool HasOtherAdministratorWithPassword(Guid userId)
+            => GetUsers().Any(u => !u.Id.Equals(userId) && u.HasPermission(PermissionKind.IsAdministrator) && !string.IsNullOrEmpty(u.Password));
+
+        /// <inheritdoc/>
+        public async Task SetPinAsync(Guid userId, string? pin)
+        {
+            if (pin is not null && !SignInPin.IsValid(pin))
+            {
+                throw new ArgumentException($"A PIN must be {SignInPin.Length} digits.", nameof(pin));
+            }
+
+            using (await _userLock.LockAsync(userId).ConfigureAwait(false))
+            {
+                var dbContext = await _dbProvider.CreateDbContextAsync().ConfigureAwait(false);
+                await using (dbContext.ConfigureAwait(false))
+                {
+                    var user = await UserQuery(dbContext)
+                        .AsTracking()
+                        .FirstOrDefaultAsync(u => u.Id == userId)
+                        .ConfigureAwait(false)
+                        ?? throw new ResourceNotFoundException(nameof(userId));
+
+                    user.SetPreference(PreferenceKind.SignInPinHash, pin is null ? Array.Empty<string>() : [_defaultAuthenticationProvider.HashPin(pin)]);
+                    await dbContext.SaveChangesAsync().ConfigureAwait(false);
+                }
+            }
+
+            _pinAttempts.Succeeded(userId);
+            _logger.LogInformation("Sign in PIN of user {UserId} {Action}", userId, pin is null ? "removed" : "set");
         }
 
         /// <inheritdoc/>
@@ -435,9 +478,10 @@ namespace Jellyfin.Server.Implementations.Users
                         .FirstOrDefaultAsync(u => u.Id == userId)
                         .ConfigureAwait(false)
                         ?? throw new ResourceNotFoundException(nameof(userId));
-                    if (dbUser.HasPermission(PermissionKind.IsAdministrator) && string.IsNullOrWhiteSpace(newPassword))
+                    // Any user may do without a password, as long as one administrator always has one
+                    if (dbUser.HasPermission(PermissionKind.IsAdministrator) && string.IsNullOrWhiteSpace(newPassword) && !HasOtherAdministratorWithPassword(userId))
                     {
-                        throw new ArgumentException("Admin user passwords must not be empty", nameof(newPassword));
+                        throw new ArgumentException("There must always be an administrator with a password. Give another administrator a password first.", nameof(newPassword));
                     }
 
                     await GetAuthenticationProvider(dbUser).ChangePassword(dbUser, newPassword).ConfigureAwait(false);
@@ -458,6 +502,12 @@ namespace Jellyfin.Server.Implementations.Users
                 Id = user.Id,
                 ServerId = _appHost.SystemId,
                 EnableAutoLogin = user.EnableAutoLogin,
+#pragma warning disable CS0618 // Finly fills these in again, clients use them to decide whether to ask for a password
+                // Something has to be entered for a password or a PIN, only a profile with neither signs in with a tap
+                HasPassword = !string.IsNullOrEmpty(user.Password) || SignInPin.IsSet(user),
+                HasConfiguredPassword = !string.IsNullOrEmpty(user.Password),
+#pragma warning restore CS0618
+                HasPin = SignInPin.IsSet(user) && (remoteEndPoint is null || _networkManager.IsInLocalNetwork(remoteEndPoint)),
                 LastLoginDate = user.LastLoginDate,
                 LastActivityDate = user.LastActivityDate,
                 PrimaryImageTag = user.ProfileImage is not null ? _imageProcessor.GetImageCacheTag(user) : null,
@@ -559,8 +609,48 @@ namespace Jellyfin.Server.Implementations.Users
                     user = await UserQuery(dbContext).FirstOrDefaultAsync(e => e.Id == user.Id).ConfigureAwait(false) ?? user;
                 }
 
-                var authResult = await AuthenticateLocalUser(username, password, user)
-                    .ConfigureAwait(false);
+                // A PIN signs in on the home network in place of the password. Wrong PINs are throttled on their own and
+                // never count towards disabling the account.
+                var pinHash = user is null ? null : SignInPin.GetHash(user);
+                var pinTried = false;
+                var pinSignIn = false;
+                if (user is not null && pinHash is not null && SignInPin.IsValid(password) && _networkManager.IsInLocalNetwork(remoteEndPoint))
+                {
+                    var lockout = _pinAttempts.GetLockout(user.Id);
+                    if (lockout > TimeSpan.Zero)
+                    {
+                        _logger.LogInformation("PIN sign in for {UserName} refused for another {Seconds:0} seconds after too many wrong PINs (IP: {IP}).", username, lockout.TotalSeconds, remoteEndPoint);
+                        throw new SecurityException(string.Format(CultureInfo.InvariantCulture, "Too many wrong PINs, try again in {0:0} seconds.", Math.Ceiling(lockout.TotalSeconds)));
+                    }
+
+                    pinTried = true;
+                    pinSignIn = _defaultAuthenticationProvider.VerifyPin(pinHash, password);
+                    if (pinSignIn)
+                    {
+                        _pinAttempts.Succeeded(user.Id);
+                    }
+                    else
+                    {
+                        _pinAttempts.Failed(user.Id);
+                    }
+                }
+
+                // Without a password only the PIN signs in: an empty password must not open a PIN protected profile
+                if (user is not null && pinHash is not null && !pinSignIn && string.IsNullOrEmpty(user.Password))
+                {
+                    _logger.LogInformation("Authentication request for {UserName} has been denied, the profile needs its PIN (IP: {IP}).", username, remoteEndPoint);
+                    return null;
+                }
+
+                var authResult = pinSignIn
+                    ? (AuthenticationProvider: (IAuthenticationProvider?)_defaultAuthenticationProvider, Username: username, Success: true)
+                    : await AuthenticateLocalUser(username, password, user).ConfigureAwait(false);
+
+                if (pinTried && !authResult.Success)
+                {
+                    _logger.LogInformation("Authentication request for {UserName} has been denied, wrong PIN (IP: {IP}).", username, remoteEndPoint);
+                    return null;
+                }
                 var authenticationProvider = authResult.AuthenticationProvider;
                 success = authResult.Success;
 

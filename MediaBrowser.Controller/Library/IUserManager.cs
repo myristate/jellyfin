@@ -97,6 +97,21 @@ namespace MediaBrowser.Controller.Library
         Task DeleteUserAsync(Guid userId);
 
         /// <summary>
+        /// Checks whether an administrator other than the given user has a password. There must always be one.
+        /// </summary>
+        /// <param name="userId">The user to leave out.</param>
+        /// <returns><c>true</c> when another administrator has a password.</returns>
+        bool HasOtherAdministratorWithPassword(Guid userId);
+
+        /// <summary>
+        /// Sets or removes the user's sign in PIN, which signs them in on the home network in place of their password.
+        /// </summary>
+        /// <param name="userId">The user id.</param>
+        /// <param name="pin">The PIN, or <c>null</c> to remove it.</param>
+        /// <returns>A task representing the change.</returns>
+        Task SetPinAsync(Guid userId, string? pin);
+
+        /// <summary>
         /// Resets the password.
         /// </summary>
         /// <param name="userId">The users Id.</param>

@@ -73,6 +73,11 @@ namespace MediaBrowser.Model.Dto
         public bool? HasConfiguredEasyPassword { get; set; } = false;
 
         /// <summary>
+        /// Gets or sets a value indicating whether the user can sign in with a PIN from where this was asked (Finly).
+        /// </summary>
+        public bool? HasPin { get; set; }
+
+        /// <summary>
         /// Gets or sets whether async login is enabled or not.
         /// </summary>
         public bool? EnableAutoLogin { get; set; }
