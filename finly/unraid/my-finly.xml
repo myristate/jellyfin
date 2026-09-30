@@ -16,7 +16,7 @@
   <WebUI>http://[IP]:[PORT:8096]</WebUI>
   <TemplateURL/>
   <Icon>https://raw.githubusercontent.com/myristate/jellyfin/custom-12.1/finly/unraid/finly-icon.png</Icon>
-  <ExtraParams>--runtime=nvidia --tmpfs /transcode:rw,size=16g,mode=1777</ExtraParams>
+  <ExtraParams>--runtime=nvidia</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>
@@ -27,6 +27,7 @@
   <Config Name="Host Path for /config" Target="/config" Default="/mnt/user/appdata/finly" Mode="rw" Description="Finly's own settings, users and database" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/finly</Config>
   <Config Name="TV Folder" Target="/tv" Default="/mnt/user/media/tv/" Mode="ro" Description="Shared with Jellyfin, read-only for Finly" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/media/tv/</Config>
   <Config Name="Movies" Target="/movies" Default="/mnt/user/media/movies/" Mode="ro" Description="Shared with Jellyfin, read-only for Finly" Type="Path" Display="always" Required="false" Mask="false">/mnt/user/media/movies/</Config>
+  <Config Name="Transcodes" Target="/transcode" Default="/mnt/user/appdata/finly/transcode" Mode="rw" Description="Transcodes and Live TV buffers, which grow for as long as a channel is watched, so on disk rather than in RAM. Separate from Jellyfin's, which is emptied whenever Jellyfin starts." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/finly/transcode</Config>
   <Config Name="NVIDIA_VISIBLE_DEVICES" Target="NVIDIA_VISIBLE_DEVICES" Default="" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">GPU-303f9dba-550b-c8c6-6c97-969dd2150bb6</Config>
   <Config Name="NVIDIA_DRIVER_CAPABILITIES" Target="NVIDIA_DRIVER_CAPABILITIES" Default="all" Mode="" Description="" Type="Variable" Display="always" Required="false" Mask="false">all</Config>
   <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="" Type="Variable" Display="advanced-hide" Required="false" Mask="false">99</Config>

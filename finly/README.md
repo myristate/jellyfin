@@ -18,7 +18,7 @@ Finly is a family fork of Jellyfin 12.1. It runs alongside the official Jellyfin
   - Port 8097.
   - `/mnt/user/appdata/finly` for settings.
   - Read-only media folders.
-  - A private tmpfs for transcodes.
+  - Transcodes and Live TV buffers in `/mnt/user/appdata/finly/transcode`, on disk so a long viewing session cannot fill RAM.
 
 ## Rebuild and update
 
