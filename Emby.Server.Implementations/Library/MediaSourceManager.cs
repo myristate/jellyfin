@@ -997,17 +997,35 @@ namespace Emby.Server.Implementations.Library
             {
                 await Task.Delay(LiveStreamCloseGracePeriod).ConfigureAwait(false);
 
-                using (await _liveStreamLocker.LockAsync().ConfigureAwait(false))
+                // (Finly) A viewer who has gone can leave its transcode reading for a little longer (until the
+                // transcode's kill timer stops it), so keep checking and close as soon as the reading stops. After
+                // ten minutes of reading the watchdog takes over.
+                var checkUntil = DateTime.UtcNow.AddMinutes(10);
+                while (true)
                 {
-                    // Only close it if nobody started watching it again in the meantime, and only from the latest wait:
-                    // a wait from an earlier close would otherwise cut a later grace period short
-                    // (Finly) A stream someone still reads is left to the watchdog, which closes it once they stop
-                    if (_closeGenerations.TryGetValue(id, out var latest) && latest == generation
-                        && _openStreams.TryGetValue(id, out var current) && ReferenceEquals(current, liveStream) && liveStream.ConsumerCount <= 0
-                        && !IsBeingRead(liveStream))
+                    using (await _liveStreamLocker.LockAsync().ConfigureAwait(false))
                     {
-                        await CloseOpenLiveStream(id, liveStream).ConfigureAwait(false);
+                        // Only close it if nobody started watching it again in the meantime, and only from the latest wait:
+                        // a wait from an earlier close would otherwise cut a later grace period short
+                        if (!_closeGenerations.TryGetValue(id, out var latest) || latest != generation
+                            || !_openStreams.TryGetValue(id, out var current) || !ReferenceEquals(current, liveStream) || liveStream.ConsumerCount > 0)
+                        {
+                            return;
+                        }
+
+                        if (!IsBeingRead(liveStream))
+                        {
+                            await CloseOpenLiveStream(id, liveStream).ConfigureAwait(false);
+                            return;
+                        }
                     }
+
+                    if (DateTime.UtcNow > checkUntil)
+                    {
+                        return;
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
