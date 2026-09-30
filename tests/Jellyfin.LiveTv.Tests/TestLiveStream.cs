@@ -1,4 +1,3 @@
-using System.IO;
 using Jellyfin.LiveTv.IO;
 using Jellyfin.LiveTv.TunerHosts;
 using MediaBrowser.Model.Dto;
@@ -23,8 +22,7 @@ internal sealed class TestLiveStream : LiveStream
             LiveTvTestHelpers.CreateConfig(transcodePath).Object,
             new StreamHelper())
     {
-        File.WriteAllBytes(TempFilePath, new byte[188 * 10]);
+        using var writer = CreateBufferWriter();
+        writer.Write(new byte[188 * 10]);
     }
-
-    public string BufferPath => TempFilePath;
 }

@@ -164,7 +164,7 @@ namespace Jellyfin.LiveTv.TunerHosts.HdHomerun
             {
                 try
                 {
-                    await CopyTo(udpClient, TempFilePath, openTaskCompletionSource, cancellationToken).ConfigureAwait(false);
+                    await CopyTo(udpClient, openTaskCompletionSource, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is OperationCanceledException || ex is TimeoutException)
                 {
@@ -180,14 +180,15 @@ namespace Jellyfin.LiveTv.TunerHosts.HdHomerun
                 EnableStreamSharing = false;
             }
 
-            await DeleteTempFiles(TempFilePath).ConfigureAwait(false);
+            await DeleteBufferFiles().ConfigureAwait(false);
         }
 
-        private async Task CopyTo(UdpClient udpClient, string file, TaskCompletionSource<bool> openTaskCompletionSource, CancellationToken cancellationToken)
+        private async Task CopyTo(UdpClient udpClient, TaskCompletionSource<bool> openTaskCompletionSource, CancellationToken cancellationToken)
         {
             var resolved = false;
 
-            var fileStream = new FileStream(file, FileMode.Create, FileAccess.Write, FileShare.Read);
+            // (Finly) Into a buffer of chunks that are deleted once read, not one ever growing file
+            var fileStream = CreateBufferWriter();
             await using (fileStream.ConfigureAwait(false))
             {
                 while (true)

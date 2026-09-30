@@ -162,13 +162,8 @@ namespace Jellyfin.LiveTv.TunerHosts
                             var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                             await using (stream.ConfigureAwait(false))
                             {
-                                var fileStream = new FileStream(
-                                    TempFilePath,
-                                    FileMode.Create,
-                                    FileAccess.Write,
-                                    FileShare.Read,
-                                    IODefaults.FileStreamBufferSize,
-                                    FileOptions.Asynchronous);
+                                // (Finly) Into a buffer of chunks that are deleted once read, not one ever growing file
+                                var fileStream = CreateBufferWriter();
 
                                 await using (fileStream.ConfigureAwait(false))
                                 {
@@ -196,7 +191,7 @@ namespace Jellyfin.LiveTv.TunerHosts
                     openTaskCompletionSource.TrySetResult(false);
 
                     EnableStreamSharing = false;
-                    await DeleteTempFiles(TempFilePath).ConfigureAwait(false);
+                    await DeleteBufferFiles().ConfigureAwait(false);
                 },
                 CancellationToken.None);
         }
