@@ -33,6 +33,12 @@ namespace Emby.Server.Implementations.Library
         /// </summary>
         private const int LiveProbeAnalyzeDurationMs = 1500;
 
+        /// <summary>
+        /// The longest a live stream probe may take. A channel that sends almost nothing, such as a data or off air
+        /// service, never fills the probe and would otherwise hold it, and the tuner, for many minutes.
+        /// </summary>
+        private static readonly TimeSpan LiveProbeTimeout = TimeSpan.FromSeconds(6);
+
         public LiveStreamHelper(IMediaEncoder mediaEncoder, ILogger logger, IApplicationPaths appPaths)
         {
             _mediaEncoder = mediaEncoder;
@@ -87,14 +93,25 @@ namespace Emby.Server.Implementations.Library
                 // about every second, so 1.5 seconds of stream is enough to find every stream and its format
                 mediaSource.AnalyzeDurationMs = LiveProbeAnalyzeDurationMs;
 
-                mediaInfo = await _mediaEncoder.GetMediaInfo(
-                    new MediaInfoRequest
+                using (var probeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                {
+                    probeCancellation.CancelAfter(LiveProbeTimeout);
+                    try
                     {
-                        MediaSource = mediaSource,
-                        MediaType = isAudio ? DlnaProfileType.Audio : DlnaProfileType.Video,
-                        ExtractChapters = false
-                    },
-                    cancellationToken).ConfigureAwait(false);
+                        mediaInfo = await _mediaEncoder.GetMediaInfo(
+                            new MediaInfoRequest
+                            {
+                                MediaSource = mediaSource,
+                                MediaType = isAudio ? DlnaProfileType.Audio : DlnaProfileType.Video,
+                                ExtractChapters = false
+                            },
+                            probeCancellation.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"Probing the live stream took longer than {LiveProbeTimeout.TotalSeconds} seconds");
+                    }
+                }
 
                 // A video stream without a codec is a stream that sent no data during the probe, for example a channel
                 // that is off air and only broadcasting sound. Treat it as missing rather than as unplayable video.

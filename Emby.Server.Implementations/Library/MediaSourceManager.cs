@@ -724,6 +724,11 @@ namespace Emby.Server.Implementations.Library
                         .ConfigureAwait(false);
                 }
             }
+            catch (TimeoutException ex)
+            {
+                _logger.LogWarning("Live stream {LiveStreamId}: {Message}, playing it without stream details", mediaSource.LiveStreamId, ex.Message);
+                AddMediaInfo(mediaSource);
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error probing live tv stream");

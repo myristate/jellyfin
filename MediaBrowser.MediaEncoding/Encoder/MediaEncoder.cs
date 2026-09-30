@@ -561,7 +561,14 @@ namespace MediaBrowser.MediaEncoding.Encoder
             {
                 StartProcess(processWrapper);
                 using var reader = process.StandardOutput;
-                await reader.BaseStream.CopyToAsync(memoryStream, cancellationToken).ConfigureAwait(false);
+
+                // Stop ffprobe when the probe is canceled, otherwise it keeps reading, a live stream for as long as it runs
+                using (cancellationToken.Register(() => StopProcess(processWrapper, 0)))
+                {
+                    await reader.BaseStream.CopyToAsync(memoryStream, cancellationToken).ConfigureAwait(false);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
                 memoryStream.Seek(0, SeekOrigin.Begin);
                 InternalMediaInfoResult result;
                 try
