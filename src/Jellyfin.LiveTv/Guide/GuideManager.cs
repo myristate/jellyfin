@@ -40,6 +40,7 @@ public class GuideManager : IGuideManager
     private readonly IRecordingsManager _recordingsManager;
     private readonly ISchedulesDirectService _schedulesDirectService;
     private readonly LiveTvDtoService _tvDtoService;
+    private readonly IProviderManager _providerManager;
 
     /// <summary>
     /// Amount of days images are pre-cached from external sources.
@@ -59,6 +60,7 @@ public class GuideManager : IGuideManager
     /// <param name="recordingsManager">The <see cref="IRecordingsManager"/>.</param>
     /// <param name="schedulesDirectService">The <see cref="ISchedulesDirectService"/>.</param>
     /// <param name="tvDtoService">The <see cref="LiveTvDtoService"/>.</param>
+    /// <param name="providerManager">The <see cref="IProviderManager"/>.</param>
     public GuideManager(
         ILogger<GuideManager> logger,
         IConfigurationManager config,
@@ -69,7 +71,8 @@ public class GuideManager : IGuideManager
         ITunerHostManager tunerHostManager,
         IRecordingsManager recordingsManager,
         ISchedulesDirectService schedulesDirectService,
-        LiveTvDtoService tvDtoService)
+        LiveTvDtoService tvDtoService,
+        IProviderManager providerManager)
     {
         _logger = logger;
         _config = config;
@@ -81,6 +84,7 @@ public class GuideManager : IGuideManager
         _recordingsManager = recordingsManager;
         _schedulesDirectService = schedulesDirectService;
         _tvDtoService = tvDtoService;
+        _providerManager = providerManager;
     }
 
     /// <inheritdoc />
@@ -172,7 +176,27 @@ public class GuideManager : IGuideManager
             await coreService.RefreshTimers(cancellationToken).ConfigureAwait(false);
         }
 
+        QueueLiveTvLibraryRefresh(cancellationToken);
+
         progress.Report(100);
+    }
+
+    /// <summary>
+    /// Refreshes the Live TV library (Finly), so the channels on its logo wall change each day: its image is made again
+    /// once it is a day old, but only when the library is refreshed.
+    /// </summary>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    private void QueueLiveTvLibraryRefresh(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var folder = _liveTvManager.GetInternalLiveTvFolder(cancellationToken);
+            _providerManager.QueueRefresh(folder.Id, new MetadataRefreshOptions(new DirectoryService(_fileSystem)), RefreshPriority.Low);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error queueing a refresh of the Live TV library");
+        }
     }
 
     private double GetGuideDays()

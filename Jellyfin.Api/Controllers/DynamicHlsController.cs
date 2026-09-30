@@ -1591,7 +1591,9 @@ public class DynamicHlsController : BaseJellyfinApiController
         var segmentFormat = string.Empty;
         var segmentContainer = outputExtension.TrimStart('.');
         var inputModifier = _encodingHelper.GetInputModifier(state, _encodingOptions, segmentContainer);
-        var hlsArguments = $"-hls_playlist_type {(isEventPlaylist ? "event" : "vod")} -hls_list_size 0";
+        // (Finly) A live channel keeps a sliding window of segments instead of every segment since it started
+        var hlsArguments = LiveHlsWindow.GetPlaylistArguments(isEventPlaylist, state.MediaSource?.IsInfiniteStream == true, state.SegmentLength)
+            ?? $"-hls_playlist_type {(isEventPlaylist ? "event" : "vod")} -hls_list_size 0";
 
         if (string.Equals(segmentContainer, "ts", StringComparison.OrdinalIgnoreCase))
         {

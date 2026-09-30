@@ -199,41 +199,61 @@ namespace Jellyfin.LiveTv.TunerHosts
                 }
             }
 
+            // (Finly) Only a tuner saying it has no free tuner is "busy", which is worth retrying once idle streams are
+            // closed. A tuner that fails (unreachable, no answer, no data, an error) is reported as a failure, and a
+            // channel that isn't broadcasting as such.
+            LiveTvConflictException busy = null;
+            LiveTvTunerException failed = null;
             LiveTvChannelUnavailableException unavailable = null;
-            var busy = false;
             foreach (var hostTuple in hostsWithChannel)
             {
                 var host = hostTuple.Item1;
                 var channelInfo = hostTuple.Item2;
 
+                ILiveStream liveStream = null;
                 try
                 {
-                    var liveStream = await GetChannelStream(host, channelInfo, streamId, currentLiveStreams, cancellationToken).ConfigureAwait(false);
+                    liveStream = await GetChannelStream(host, channelInfo, streamId, currentLiveStreams, cancellationToken).ConfigureAwait(false);
                     var startTime = DateTime.UtcNow;
                     await liveStream.Open(cancellationToken).ConfigureAwait(false);
                     var endTime = DateTime.UtcNow;
                     Logger.LogInformation("Live stream opened after {0}ms", (endTime - startTime).TotalMilliseconds);
                     return liveStream;
                 }
-                catch (LiveTvChannelUnavailableException ex)
-                {
-                    Logger.LogWarning("Channel {Channel} can't be played on {Host}: {Message}", channelInfo.Name, host.Url, ex.Message);
-                    unavailable = ex;
-                }
                 catch (Exception ex)
                 {
-                    Logger.LogError(ex, "Error opening tuner");
-                    busy = true;
+                    // (Finly) Whatever went wrong, don't leave the stream copying from the tuner
+                    liveStream?.Dispose();
+
+                    switch (ex)
+                    {
+                        case OperationCanceledException when cancellationToken.IsCancellationRequested:
+                            throw;
+                        case LiveTvChannelUnavailableException channelUnavailable:
+                            Logger.LogWarning("Channel {Channel} can't be played on {Host}: {Message}", channelInfo.Name, host.Url, ex.Message);
+                            unavailable = channelUnavailable;
+                            break;
+                        case LiveTvConflictException conflict:
+                            Logger.LogWarning("{Host} has no free tuner for {Channel}: {Message}", host.Url, channelInfo.Name, ex.Message);
+                            busy = conflict;
+                            break;
+                        default:
+                            failed = TunerErrors.ToTunerException(ex, host.Url);
+                            if (TunerErrors.IsExpected(ex))
+                            {
+                                Logger.LogWarning("{Host} failed to stream {Channel}: {Message}", host.Url, channelInfo.Name, failed.Message);
+                            }
+                            else
+                            {
+                                Logger.LogError(ex, "{Host} failed to stream {Channel}", host.Url, channelInfo.Name);
+                            }
+
+                            break;
+                    }
                 }
             }
 
-            // Only report the channel as off air when that's the reason every tuner gave, a busy tuner is worth retrying
-            if (unavailable is not null && !busy)
-            {
-                throw unavailable;
-            }
-
-            throw new LiveTvConflictException("Unable to find host to play channel");
+            throw TunerErrors.Choose(busy, failed, unavailable) ?? new LiveTvTunerException("No tuner has this channel", false);
         }
 
         protected virtual bool IsValidChannelId(string channelId)

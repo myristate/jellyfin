@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.Streaming;
@@ -14,6 +15,12 @@ public interface ITranscodeManager
     /// Deletes all cached transcoded media files from the configured transcode path.
     /// </summary>
     void DeleteEncodedMediaCache();
+
+    /// <summary>
+    /// Gets the output paths of the transcoding jobs running now (Finly).
+    /// </summary>
+    /// <returns>The paths, or <c>null</c> when they can't be listed.</returns>
+    IReadOnlyList<string>? GetActiveTranscodingPaths() => null;
 
     /// <summary>
     /// Get transcoding job.
@@ -46,6 +53,17 @@ public interface ITranscodeManager
     /// <param name="deleteFiles">The delete files.</param>
     /// <returns>Task.</returns>
     public Task KillTranscodingJobs(string deviceId, string? playSessionId, Func<string, bool> deleteFiles);
+
+    /// <summary>
+    /// Kills the transcoding jobs, and closes their live streams if asked (Finly).
+    /// </summary>
+    /// <param name="deviceId">The device id.</param>
+    /// <param name="playSessionId">The play session identifier.</param>
+    /// <param name="deleteFiles">The delete files.</param>
+    /// <param name="closeLiveStreams">Whether to close the jobs' live streams too.</param>
+    /// <returns>Task.</returns>
+    public Task KillTranscodingJobs(string deviceId, string? playSessionId, Func<string, bool> deleteFiles, bool closeLiveStreams)
+        => KillTranscodingJobs(deviceId, playSessionId, deleteFiles);
 
     /// <summary>
     /// Report the transcoding progress to the session manager.

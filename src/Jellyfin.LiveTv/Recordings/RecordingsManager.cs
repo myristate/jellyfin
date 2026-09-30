@@ -52,6 +52,14 @@ public sealed class RecordingsManager : IRecordingsManager, IDisposable
     private readonly RecordingsMetadataManager _recordingsMetadataManager;
 
     private readonly ConcurrentDictionary<string, ActiveRecordingInfo> _activeRecordings = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// How long probing a channel for a recording may take (Finly), longer than for live viewing.
+    /// </summary>
+    internal static readonly TimeSpan RecordingProbeTimeout = TimeSpan.FromSeconds(20);
+
+    // (Finly) The live streams recordings are using, which the live stream watchdog leaves alone
+    private readonly ConcurrentDictionary<string, int> _recordingLiveStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly AsyncNonKeyedLocker _recordingDeleteSemaphore = new();
     private bool _disposed;
 
@@ -291,6 +299,10 @@ public sealed class RecordingsManager : IRecordingsManager, IDisposable
     }
 
     /// <inheritdoc />
+    public bool IsRecordingLiveStream(string liveStreamId)
+        => _recordingLiveStreams.TryGetValue(liveStreamId, out var count) && count > 0;
+
+    /// <inheritdoc />
     public void CancelRecording(string timerId, TimerInfo? timer)
     {
         if (_activeRecordings.TryGetValue(timerId, out var activeRecordingInfo))
@@ -321,17 +333,20 @@ public sealed class RecordingsManager : IRecordingsManager, IDisposable
             IDirectStreamProvider? directStreamProvider = null;
             if (mediaStreamInfo.RequiresOpening)
             {
+                // (Finly) A recording gives the channel longer to be identified than a viewer waiting for a picture
                 var liveStreamResponse = await _mediaSourceManager.OpenLiveStreamInternal(
                     new LiveStreamRequest
                     {
                         ItemId = channel.Id,
                         OpenToken = mediaStreamInfo.OpenToken
                     },
+                    new LiveStreamOpenOptions { ProbeTimeout = RecordingProbeTimeout },
                     CancellationToken.None).ConfigureAwait(false);
 
                 mediaStreamInfo = liveStreamResponse.Item1.MediaSource;
                 liveStreamId = mediaStreamInfo.LiveStreamId;
                 directStreamProvider = liveStreamResponse.Item2;
+                _recordingLiveStreams.AddOrUpdate(liveStreamId, 1, (_, count) => count + 1);
             }
 
             using var recorder = GetRecorder(mediaStreamInfo);
@@ -385,6 +400,9 @@ public sealed class RecordingsManager : IRecordingsManager, IDisposable
 
         if (!string.IsNullOrWhiteSpace(liveStreamId))
         {
+            _recordingLiveStreams.AddOrUpdate(liveStreamId, 0, (_, count) => Math.Max(count - 1, 0));
+            _recordingLiveStreams.TryRemove(new KeyValuePair<string, int>(liveStreamId, 0));
+
             try
             {
                 await _mediaSourceManager.CloseLiveStream(liveStreamId).ConfigureAwait(false);

@@ -36,6 +36,11 @@ namespace Jellyfin.LiveTv
     /// </summary>
     public class LiveTvManager : ILiveTvManager
     {
+        /// <summary>
+        /// The name of the Live TV library (Finly).
+        /// </summary>
+        internal const string LiveTvViewName = "TV";
+
         private readonly IServerConfigurationManager _config;
         private readonly ILogger<LiveTvManager> _logger;
         private readonly IUserManager _userManager;
@@ -1271,8 +1276,9 @@ namespace Jellyfin.LiveTv
 
         public Folder GetInternalLiveTvFolder(CancellationToken cancellationToken)
         {
-            var name = _localization.GetServerLocalizedString("HeaderLiveTV");
-            return _libraryManager.GetNamedView(name, CollectionType.livetv, name);
+            // (Finly) The Live TV library is called "TV". The name is set here rather than in the translations, which keep
+            // upstream's "Live TV" for everything else. The view's id doesn't depend on its name.
+            return _libraryManager.GetNamedView(LiveTvViewName, CollectionType.livetv, LiveTvViewName);
         }
 
         /// <inheritdoc />

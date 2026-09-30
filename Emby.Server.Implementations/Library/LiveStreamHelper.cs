@@ -21,7 +21,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Emby.Server.Implementations.Library
 {
-    public class LiveStreamHelper
+    public partial class LiveStreamHelper
     {
         private readonly IMediaEncoder _mediaEncoder;
         private readonly ILogger _logger;
@@ -39,6 +39,11 @@ namespace Emby.Server.Implementations.Library
         /// </summary>
         private static readonly TimeSpan LiveProbeTimeout = TimeSpan.FromSeconds(5);
 
+        /// <summary>
+        /// The longest a probe for a recording may take (Finly). A recording would rather wait than fail.
+        /// </summary>
+        public static readonly TimeSpan RecordingProbeTimeout = TimeSpan.FromSeconds(20);
+
         public LiveStreamHelper(IMediaEncoder mediaEncoder, ILogger logger, IApplicationPaths appPaths)
         {
             _mediaEncoder = mediaEncoder;
@@ -46,36 +51,40 @@ namespace Emby.Server.Implementations.Library
             _appPaths = appPaths;
         }
 
-        public async Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, CancellationToken cancellationToken)
+        public Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, CancellationToken cancellationToken)
+            => AddMediaInfoWithProbe(mediaSource, isAudio, cacheKey, addProbeDelay, null, cancellationToken);
+
+        /// <summary>
+        /// Probes a live stream, or uses what probing its channel found before.
+        /// </summary>
+        /// <param name="mediaSource">The stream's media source, which is filled in.</param>
+        /// <param name="isAudio">Whether it is a radio station.</param>
+        /// <param name="cacheKey">The key under which the probe is cached, or <c>null</c> not to cache it.</param>
+        /// <param name="addProbeDelay">Whether to wait before probing.</param>
+        /// <param name="probeTimeout">How long probing may take (Finly), or <c>null</c> for <see cref="LiveProbeTimeout"/>.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A task.</returns>
+        public async Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, TimeSpan? probeTimeout, CancellationToken cancellationToken)
         {
+            var timeout = probeTimeout ?? LiveProbeTimeout;
             var originalRuntime = mediaSource.RunTimeTicks;
 
             var now = DateTime.UtcNow;
 
             MediaInfo? mediaInfo = null;
-            var cacheFilePath = string.IsNullOrEmpty(cacheKey) ? null : Path.Combine(_appPaths.CachePath, "mediainfo", cacheKey.GetMD5().ToString("N", CultureInfo.InvariantCulture) + ".json");
+            var cacheFilePath = string.IsNullOrEmpty(cacheKey) ? null : GetProbeCachePath(_appPaths, cacheKey);
 
             if (cacheFilePath is not null)
             {
-                try
+                // (Finly) What probing the channel found before, re-probed in the background once it is a week old
+                var cached = await ReadProbeCache(cacheFilePath, cancellationToken).ConfigureAwait(false);
+                if (cached?.MediaInfo is not null)
                 {
-                    FileStream jsonStream = AsyncFile.OpenRead(cacheFilePath);
-
-                    await using (jsonStream.ConfigureAwait(false))
+                    mediaInfo = cached.MediaInfo;
+                    if (IsStale(cached.ProbeDateUtc, now))
                     {
-                        mediaInfo = await JsonSerializer.DeserializeAsync<MediaInfo>(jsonStream, _jsonOptions, cancellationToken).ConfigureAwait(false);
+                        ProbeAgainInBackground(mediaSource, isAudio, cacheFilePath);
                     }
-
-                    // Keep channels that are in use out of the cache cleanup, which removes files not written for 30 days
-                    File.SetLastWriteTimeUtc(cacheFilePath, now);
-                }
-                catch (IOException ex)
-                {
-                    _logger.LogDebug(ex, "Could not open cached media info");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error opening cached media info");
                 }
             }
 
@@ -89,54 +98,14 @@ namespace Emby.Server.Implementations.Library
                     await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
                 }
 
-                // SD channels repeat their MPEG-2 sequence header every half second and HD channels send a key frame
-                // about every second, so 1.5 seconds of stream is enough to find every stream and its format
-                mediaSource.AnalyzeDurationMs = LiveProbeAnalyzeDurationMs;
-
-                using (var probeCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-                {
-                    probeCancellation.CancelAfter(LiveProbeTimeout);
-                    try
-                    {
-                        mediaInfo = await _mediaEncoder.GetMediaInfo(
-                            new MediaInfoRequest
-                            {
-                                MediaSource = mediaSource,
-                                MediaType = isAudio ? DlnaProfileType.Audio : DlnaProfileType.Video,
-                                ExtractChapters = false
-                            },
-                            probeCancellation.Token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                    {
-                        throw new TimeoutException($"Probing the live stream took longer than {LiveProbeTimeout.TotalSeconds} seconds");
-                    }
-                }
-
-                // A radio station has no video stream at all. A TV channel that is off air still lists its video stream,
-                // just without data, so it isn't mistaken for radio and kept without its picture.
-                var isRadio = !mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Video)
-                    && mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Audio && !string.IsNullOrEmpty(i.Codec));
-
-                // A video stream without a codec is a stream that sent no data during the probe, for example a channel
-                // that is off air and only broadcasting sound. Treat it as missing rather than as unplayable video.
-                mediaInfo.MediaStreams = mediaInfo.MediaStreams
-                    .Where(i => i.Type != MediaStreamType.Video || !string.IsNullOrEmpty(i.Codec))
-                    .ToList();
+                var (probed, isComplete) = await Probe(mediaSource, isAudio, timeout, cancellationToken).ConfigureAwait(false);
+                mediaInfo = probed;
 
                 // Only cache a complete probe: one that caught the picture size, or a radio station's sound. A short probe
                 // that just missed a sequence header is tried again next time instead of being kept for good.
-                if (cacheFilePath is not null && (isRadio || mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Video && i.Width > 0)))
+                if (cacheFilePath is not null && isComplete)
                 {
-                    Directory.CreateDirectory(Path.GetDirectoryName(cacheFilePath) ?? throw new InvalidOperationException("Path can't be a root directory."));
-                    // Create truncates, a shorter result written over a longer one would leave a corrupt file behind
-                    FileStream createStream = AsyncFile.Create(cacheFilePath);
-                    await using (createStream.ConfigureAwait(false))
-                    {
-                        await JsonSerializer.SerializeAsync(createStream, mediaInfo, _jsonOptions, cancellationToken).ConfigureAwait(false);
-                    }
-
-                    _logger.LogDebug("Saved media info to {0}", cacheFilePath);
+                    await WriteProbeCache(cacheFilePath, mediaInfo, DateTime.UtcNow, cancellationToken).ConfigureAwait(false);
                 }
             }
 

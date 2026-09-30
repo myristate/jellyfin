@@ -107,7 +107,8 @@ public class HlsSegmentController : BaseJellyfinApiController
         [FromQuery, Required] string deviceId,
         [FromQuery, Required] string playSessionId)
     {
-        _transcodeManager.KillTranscodingJobs(deviceId, playSessionId, _ => true);
+        // (Finly) Stopping the encoding also gives back the live stream it was playing, so the tuner is freed
+        _transcodeManager.KillTranscodingJobs(deviceId, playSessionId, _ => true, true);
         return NoContent();
     }
 

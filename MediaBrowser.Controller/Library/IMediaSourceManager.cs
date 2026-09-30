@@ -94,6 +94,40 @@ namespace MediaBrowser.Controller.Library
         Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> OpenLiveStreamInternal(LiveStreamRequest request, CancellationToken cancellationToken);
 
         /// <summary>
+        /// Opens a live stream with options (Finly), for example a longer probe for a recording.
+        /// </summary>
+        /// <param name="request">The request.</param>
+        /// <param name="options">The options, or <c>null</c> for the defaults.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>The opened stream.</returns>
+        Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> OpenLiveStreamInternal(LiveStreamRequest request, LiveStreamOpenOptions options, CancellationToken cancellationToken)
+            => OpenLiveStreamInternal(request, cancellationToken);
+
+        /// <summary>
+        /// Gets the open live streams by live stream id (Finly).
+        /// </summary>
+        /// <returns>The open live streams, or <c>null</c> when they can't be listed.</returns>
+        IReadOnlyCollection<KeyValuePair<string, ILiveStream>> GetOpenLiveStreams() => null;
+
+        /// <summary>
+        /// Closes a live stream straight away whatever its consumer count, if it is still open and nobody is reading it
+        /// (Finly). Used for streams whose viewers have gone without closing them.
+        /// </summary>
+        /// <param name="id">The live stream id.</param>
+        /// <param name="liveStream">The stream expected under that id.</param>
+        /// <param name="minimumUnreadTime">How long nobody must have been reading it.</param>
+        /// <returns>Whether it was closed.</returns>
+        Task<bool> CloseUnreadLiveStream(string id, ILiveStream liveStream, TimeSpan minimumUnreadTime) => Task.FromResult(false);
+
+        /// <summary>
+        /// Forgets what probing a live stream's channel found, so it is probed again next time (Finly).
+        /// </summary>
+        /// <param name="liveStreamId">The live stream id.</param>
+        void InvalidateLiveStreamProbe(string liveStreamId)
+        {
+        }
+
+        /// <summary>
         /// Gets the live stream.
         /// </summary>
         /// <param name="id">The identifier.</param>

@@ -52,4 +52,11 @@ public interface IRecordingsManager
     /// <param name="recordingEndDate">The time to stop recording.</param>
     /// <returns>Task representing the recording process.</returns>
     Task RecordStream(ActiveRecordingInfo recordingInfo, BaseItem channel, DateTime recordingEndDate);
+
+    /// <summary>
+    /// Gets whether a recording is using a live stream (Finly), which is then never closed for not being read.
+    /// </summary>
+    /// <param name="liveStreamId">The live stream id.</param>
+    /// <returns>Whether a recording uses it.</returns>
+    bool IsRecordingLiveStream(string liveStreamId) => false;
 }

@@ -67,6 +67,9 @@ namespace Emby.Server.Implementations.Session
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _activeLiveStreamSessions
             = new(StringComparer.OrdinalIgnoreCase);
 
+        // (Finly) Sessions that recently closed their share of a live stream
+        private readonly ClosedLiveStreamSessions _closedLiveStreamSessions = new();
+
         private Timer _idleTimer;
         private Timer _inactiveTimer;
 
@@ -322,7 +325,11 @@ namespace Emby.Server.Implementations.Session
         }
 
         /// <inheritdoc />
-        public async Task CloseLiveStreamIfNeededAsync(string liveStreamId, string sessionIdOrPlaySessionId)
+        public Task CloseLiveStreamIfNeededAsync(string liveStreamId, string sessionIdOrPlaySessionId)
+            => CloseLiveStreamIfNeededAsync(liveStreamId, sessionIdOrPlaySessionId, false);
+
+        /// <inheritdoc />
+        public async Task CloseLiveStreamIfNeededAsync(string liveStreamId, string sessionIdOrPlaySessionId, bool immediately)
         {
             // Called from async void timer callbacks, where a null key would throw and bring the whole server down
             // (jellyfin/jellyfin#18035)
@@ -343,6 +350,7 @@ namespace Emby.Server.Implementations.Session
                     }
 
                     liveStreamNeedsToBeClosed = true;
+                    _closedLiveStreamSessions.Remember(liveStreamId, sessionIdOrPlaySessionId, correspondingId);
                 }
 
                 if (activeSessionMappings.IsEmpty)
@@ -352,14 +360,16 @@ namespace Emby.Server.Implementations.Session
             }
             else
             {
-                liveStreamNeedsToBeClosed = true;
+                // (Finly) A client that stopped both its encoding and its playback closes the stream twice, once with
+                // each id; the second close would take another viewer's share of the stream
+                liveStreamNeedsToBeClosed = !_closedLiveStreamSessions.WasClosed(liveStreamId, sessionIdOrPlaySessionId);
             }
 
             if (liveStreamNeedsToBeClosed)
             {
                 try
                 {
-                    await _mediaSourceManager.CloseLiveStream(liveStreamId).ConfigureAwait(false);
+                    await _mediaSourceManager.CloseLiveStream(liveStreamId, immediately).ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
@@ -872,6 +882,7 @@ namespace Emby.Server.Implementations.Session
         private void UpdateLiveStreamActiveSessionMappings(string liveStreamId, string sessionId, string playSessionId)
         {
             var activeSessionMappings = _activeLiveStreamSessions.GetOrAdd(liveStreamId, _ => new ConcurrentDictionary<string, string>());
+            _closedLiveStreamSessions.Forget(liveStreamId, sessionId, playSessionId);
 
             if (!string.IsNullOrEmpty(playSessionId))
             {

@@ -120,8 +120,12 @@ public class PrepareChannelsScheduledTask : IScheduledTask, IConfigurableSchedul
 
             try
             {
-                var response = await _mediaSourceManager.OpenLiveStream(new LiveStreamRequest { OpenToken = source.OpenToken }, cancellationToken).ConfigureAwait(false);
-                await _mediaSourceManager.CloseLiveStream(response.MediaSource.LiveStreamId, true).ConfigureAwait(false);
+                // (Finly) Never close anyone's stream to make room for this
+                var response = await _mediaSourceManager.OpenLiveStreamInternal(
+                    new LiveStreamRequest { OpenToken = source.OpenToken },
+                    new LiveStreamOpenOptions { CloseIdleStreamsWhenBusy = false },
+                    cancellationToken).ConfigureAwait(false);
+                await _mediaSourceManager.CloseLiveStream(response.Item1.MediaSource.LiveStreamId, true).ConfigureAwait(false);
                 prepared++;
             }
             catch (LiveTvChannelUnavailableException)
@@ -135,7 +139,13 @@ public class PrepareChannelsScheduledTask : IScheduledTask, IConfigurableSchedul
                 _logger.LogInformation("The tuner has no free tuner, stopping after preparing {Prepared} channels", prepared);
                 break;
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (LiveTvTunerException ex)
+            {
+                // (Finly) The tuner timed out or failed on this channel: count it and carry on with the next
+                _logger.LogWarning("Unable to prepare channel {Channel}: {Message}", channels[i].Name, ex.Message);
+                failed++;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 _logger.LogWarning(ex, "Unable to prepare channel {Channel}", channels[i].Name);
                 failed++;

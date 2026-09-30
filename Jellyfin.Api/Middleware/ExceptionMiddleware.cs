@@ -71,7 +71,8 @@ public class ExceptionMiddleware
                 || ex is OperationCanceledException
                 || ex is SecurityException
                 || ex is AuthenticationException
-                || ex is FileNotFoundException;
+                || ex is FileNotFoundException
+                || IsExpectedLiveTvError(ex);
 
             if (ignoreStackTrace)
             {
@@ -92,6 +93,7 @@ public class ExceptionMiddleware
 
             context.Response.StatusCode = GetStatusCode(ex);
             context.Response.ContentType = MediaTypeNames.Text.Plain;
+            AddLiveTvHeaders(context.Response, ex);
 
             // Don't send exception unless the server is in a Development environment
             var errorContent = _hostEnvironment.IsDevelopment()
@@ -121,7 +123,7 @@ public class ExceptionMiddleware
         return ex;
     }
 
-    private static int GetStatusCode(Exception ex)
+    internal static int GetStatusCode(Exception ex)
     {
         return ex switch
         {
@@ -132,9 +134,49 @@ public class ExceptionMiddleware
             FileNotFoundException => StatusCodes.Status404NotFound,
             ResourceNotFoundException => StatusCodes.Status404NotFound,
             MethodNotAllowedException => StatusCodes.Status405MethodNotAllowed,
+            // (Finly) The Android TV app and web take a 503 to mean the channel isn't broadcasting. A busy tuner is a
+            // conflict, a tuner that failed a bad gateway, or a gateway timeout when it didn't answer in time.
             LiveTvChannelUnavailableException => StatusCodes.Status503ServiceUnavailable,
+            LiveTvConflictException => StatusCodes.Status409Conflict,
+            LiveTvTunerException { IsTimeout: true } => StatusCodes.Status504GatewayTimeout,
+            LiveTvTunerException => StatusCodes.Status502BadGateway,
             _ => StatusCodes.Status500InternalServerError
         };
+    }
+
+    /// <summary>
+    /// Gets whether an error is an expected Live TV outcome, such as a busy tuner, logged without a stack trace (Finly).
+    /// </summary>
+    /// <param name="ex">The error.</param>
+    /// <returns>Whether it is expected.</returns>
+    internal static bool IsExpectedLiveTvError(Exception ex)
+        => ex is LiveTvChannelUnavailableException or LiveTvConflictException or LiveTvTunerException;
+
+    /// <summary>
+    /// Says why a Live TV channel couldn't be played, in the X-Finly-Reason header (Finly).
+    /// </summary>
+    /// <param name="response">The response.</param>
+    /// <param name="ex">The error.</param>
+    internal static void AddLiveTvHeaders(HttpResponse response, Exception ex)
+    {
+        var reason = ex switch
+        {
+            LiveTvChannelUnavailableException => "NotBroadcasting",
+            LiveTvConflictException => "TunersBusy",
+            LiveTvTunerException { IsTimeout: true } => "TunerTimeout",
+            LiveTvTunerException => "TunerFailed",
+            _ => null
+        };
+
+        if (reason is not null)
+        {
+            response.Headers["X-Finly-Reason"] = reason;
+        }
+
+        if (ex is LiveTvConflictException)
+        {
+            response.Headers.RetryAfter = "5";
+        }
     }
 
     private string NormalizeExceptionMessage(string msg)

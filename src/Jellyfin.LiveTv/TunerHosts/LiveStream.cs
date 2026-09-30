@@ -17,9 +17,11 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.LiveTv.TunerHosts
 {
-    public class LiveStream : ILiveStream
+    public partial class LiveStream : ILiveStream
     {
         private readonly IConfigurationManager _configurationManager;
+        private bool _disposed;
+        private LiveStreamBuffer _buffer;
 
         public LiveStream(
             MediaSourceInfo mediaSource,
@@ -75,16 +77,38 @@ namespace Jellyfin.LiveTv.TunerHosts
         public DateTime DateOpened { get; protected set; }
 
         /// <summary>
+        /// Gets a value indicating whether the stream was disposed, which stops its copy from the tuner (Finly).
+        /// </summary>
+        internal bool IsDisposed => _disposed;
+
+        /// <summary>
         /// How many seconds of already buffered stream a viewer joining a running stream gets.
         /// </summary>
         internal const double JoinBacklogSeconds = 2.5;
 
         private const int TsPacketSize = 188;
 
+        /// <summary>
+        /// Gets how many bytes have been received from the tuner (Finly).
+        /// </summary>
+        protected long BytesBuffered => Buffer.BytesWritten;
+
+        /// <summary>
+        /// Gets the buffer the tuner's data is written to and read from (Finly), in chunks starting at <see cref="TempFilePath"/>.
+        /// </summary>
+        internal LiveStreamBuffer Buffer => _buffer;
+
         protected void SetTempFilePath(string extension)
         {
             TempFilePath = Path.Combine(_configurationManager.GetTranscodePath(), UniqueId + "." + extension);
+            _buffer = new LiveStreamBuffer(TempFilePath, Logger);
         }
+
+        /// <summary>
+        /// Creates the stream the tuner's data is written to (Finly).
+        /// </summary>
+        /// <returns>The writer.</returns>
+        protected Stream CreateBufferWriter() => Buffer.CreateWriter();
 
         public virtual Task Open(CancellationToken openCancellationToken)
         {
@@ -94,61 +118,74 @@ namespace Jellyfin.LiveTv.TunerHosts
 
         public async Task Close()
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             EnableStreamSharing = false;
 
-            long bytes = -1;
-            try
-            {
-                bytes = File.Exists(TempFilePath) ? new FileInfo(TempFilePath).Length : -1;
-            }
-            catch (IOException)
-            {
-            }
-
             Logger.LogInformation(
-                "Closing {Type} {StreamId} after {Seconds:0.0} seconds, {Megabytes:0.0} MB buffered",
+                "Closing {Type} {StreamId} after {Seconds:0.0} seconds, {Megabytes:0.0} MB received",
                 GetType().Name,
                 OriginalStreamId,
                 (DateTime.UtcNow - DateOpened).TotalSeconds,
-                bytes / 1048576.0);
+                BytesBuffered / 1048576.0);
 
-            await LiveStreamCancellationTokenSource.CancelAsync().ConfigureAwait(false);
+            await StopCopying().ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Stops copying from the tuner, which releases it (Finly).
+        /// </summary>
+        /// <returns>A task.</returns>
+        protected async Task StopCopying()
+        {
+            EnableStreamSharing = false;
+            try
+            {
+                await LiveStreamCancellationTokenSource.CancelAsync().ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Already stopped and disposed
+            }
         }
 
         public Stream GetStream()
         {
-            var stream = new FileStream(
-                TempFilePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.ReadWrite,
-                IODefaults.FileStreamBufferSize,
-                FileOptions.SequentialScan | FileOptions.Asynchronous);
+            // (Finly) Count the reader for as long as it reads, so a stream nobody reads can be closed
+            BeginReading();
+            try
+            {
+                return new LiveStreamReader(OpenBufferReader(), EndReading);
+            }
+            catch
+            {
+                EndReading();
+                throw;
+            }
+        }
 
+        private Stream OpenBufferReader()
+        {
             // A viewer joining a stream that is already running starts a couple of seconds behind the live point
-            // rather than at the start of the buffer file. The backlog fills the player's start buffer at once, so a
+            // rather than at the start of the buffer. The backlog fills the player's start buffer at once, so a
             // shared or pre-tuned channel shows a picture almost immediately instead of waiting for fresh data.
             var openFor = DateTime.UtcNow - DateOpened;
-            if (openFor.TotalSeconds > JoinBacklogSeconds && stream.CanSeek)
+            if (DateOpened == default || openFor.TotalSeconds <= JoinBacklogSeconds)
             {
-                try
-                {
-                    var length = stream.Length;
-                    var position = GetJoinPosition(length, openFor);
-                    stream.Seek(position, SeekOrigin.Begin);
-                    Logger.LogInformation(
-                        "Viewer joined live stream {StreamId} open for {Seconds:0.0} seconds, starting {Kilobytes} kB behind live",
-                        OriginalStreamId,
-                        openFor.TotalSeconds,
-                        (length - position) / 1024);
-                }
-                catch (IOException ex)
-                {
-                    Logger.LogWarning(ex, "Error seeking live stream buffer");
-                }
+                return Buffer.CreateReader(0);
             }
 
-            return stream;
+            var length = Buffer.BytesWritten;
+            var reader = Buffer.CreateReader(GetJoinPosition(length, openFor));
+            Logger.LogInformation(
+                "Viewer joined live stream {StreamId} open for {Seconds:0.0} seconds, starting {Kilobytes} kB behind live",
+                OriginalStreamId,
+                openFor.TotalSeconds,
+                (length - reader.StartPosition) / 1024);
+            return reader;
         }
 
         /// <summary>
@@ -179,10 +216,47 @@ namespace Jellyfin.LiveTv.TunerHosts
 
         protected virtual void Dispose(bool dispose)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             if (dispose)
             {
-                LiveStreamCancellationTokenSource?.Dispose();
+                // (Finly) Disposing a stream that is still copying stops the copy first, so the tuner is released
+                try
+                {
+                    LiveStreamCancellationTokenSource.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+
+                LiveStreamCancellationTokenSource.Dispose();
             }
+
+            _disposed = true;
+        }
+
+        /// <summary>
+        /// Deletes the buffer's files once the stream has ended (Finly), trying again for a while if a reader still has one
+        /// open where that stops it.
+        /// </summary>
+        /// <returns>A task.</returns>
+        protected async Task DeleteBufferFiles()
+        {
+            Logger.LogInformation("Deleting live stream buffer {FilePath}", TempFilePath);
+            for (var attempt = 0; attempt <= 40; attempt++)
+            {
+                if (Buffer.DeleteAll())
+                {
+                    return;
+                }
+
+                await Task.Delay(500).ConfigureAwait(false);
+            }
+
+            Logger.LogError("Couldn't delete live stream buffer {FilePath}", TempFilePath);
         }
 
         protected async Task DeleteTempFiles(string path, int retryCount = 0)
