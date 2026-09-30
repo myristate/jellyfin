@@ -112,8 +112,7 @@ public class HiddenItemsController : BaseJellyfinApiController
             return StatusCode(StatusCodes.Status403Forbidden, "Only the user and administrators can change this profile.");
         }
 
-        await _userManager.SetItemAllowedAsync(userId, itemId, false).ConfigureAwait(false);
-        await _userManager.SetItemHiddenAsync(userId, itemId, true).ConfigureAwait(false);
+        await RemoveFromProfileAsync(userId, itemId).ConfigureAwait(false);
         return NoContent();
     }
 
@@ -183,11 +182,30 @@ public class HiddenItemsController : BaseJellyfinApiController
         var members = _userManager.GetUsers().Where(u => levelId.Equals(u.GetProfileLevelId())).ToList();
         foreach (var member in members)
         {
-            await _userManager.SetItemAllowedAsync(member.Id, itemId, false).ConfigureAwait(false);
-            await _userManager.SetItemHiddenAsync(member.Id, itemId, true).ConfigureAwait(false);
+            await RemoveFromProfileAsync(member.Id, itemId).ConfigureAwait(false);
         }
 
         return members.Count;
+    }
+
+    /// <summary>
+    /// Takes an item out of a profile: an item only there because it was allowed stops being allowed, and anything the
+    /// profile would still see goes on its removed list.
+    /// </summary>
+    private async Task RemoveFromProfileAsync(Guid userId, Guid itemId)
+    {
+        await _userManager.SetItemAllowedAsync(userId, itemId, false).ConfigureAwait(false);
+
+        var user = _userManager.GetUserById(userId);
+        var stillVisible = user is not null && _libraryManager.GetItemIds(new InternalItemsQuery(user)
+        {
+            ItemIds = [itemId],
+            DtoOptions = new DtoOptions(false)
+        }).Count > 0;
+        if (stillVisible)
+        {
+            await _userManager.SetItemHiddenAsync(userId, itemId, true).ConfigureAwait(false);
+        }
     }
 
     /// <summary>
