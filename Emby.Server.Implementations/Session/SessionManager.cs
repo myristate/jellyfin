@@ -324,11 +324,18 @@ namespace Emby.Server.Implementations.Session
         /// <inheritdoc />
         public async Task CloseLiveStreamIfNeededAsync(string liveStreamId, string sessionIdOrPlaySessionId)
         {
+            // Called from async void timer callbacks, where a null key would throw and bring the whole server down
+            // (jellyfin/jellyfin#18035)
+            if (string.IsNullOrEmpty(liveStreamId))
+            {
+                return;
+            }
+
             bool liveStreamNeedsToBeClosed = false;
 
             if (_activeLiveStreamSessions.TryGetValue(liveStreamId, out var activeSessionMappings))
             {
-                if (activeSessionMappings.TryRemove(sessionIdOrPlaySessionId, out var correspondingId))
+                if (!string.IsNullOrEmpty(sessionIdOrPlaySessionId) && activeSessionMappings.TryRemove(sessionIdOrPlaySessionId, out var correspondingId))
                 {
                     if (!string.IsNullOrEmpty(correspondingId))
                     {
