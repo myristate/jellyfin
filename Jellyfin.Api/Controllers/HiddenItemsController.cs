@@ -87,7 +87,8 @@ public class HiddenItemsController : BaseJellyfinApiController
 
     /// <summary>
     /// Removes an item from a profile's library. Anyone can remove things from their own profile, administrators
-    /// from any profile.
+    /// from any profile. Removing something from your own profile doesn't take back what a parent allowed: it stays
+    /// allowed, and comes back when put back.
     /// </summary>
     /// <param name="userId">The user id.</param>
     /// <param name="itemId">The item id.</param>
@@ -102,7 +103,8 @@ public class HiddenItemsController : BaseJellyfinApiController
     public async Task<ActionResult> HideItem([FromRoute, Required] Guid userId, [FromRoute, Required] Guid itemId)
     {
         var user = _userManager.GetUserById(userId);
-        if (user is null || _libraryManager.GetItemById(itemId) is null)
+        var item = _libraryManager.GetItemById(itemId);
+        if (user is null || item is null)
         {
             return NotFound();
         }
@@ -112,7 +114,7 @@ public class HiddenItemsController : BaseJellyfinApiController
             return StatusCode(StatusCodes.Status403Forbidden, "Only the user and administrators can change this profile.");
         }
 
-        await RemoveFromProfileAsync(userId, itemId).ConfigureAwait(false);
+        await RemoveFromProfileAsync(userId, itemId, ItemIdentity.FromItem(item), User.IsInRole(UserRoles.Administrator)).ConfigureAwait(false);
         return NoContent();
     }
 
@@ -141,7 +143,8 @@ public class HiddenItemsController : BaseJellyfinApiController
         var isAdministrator = User.IsInRole(UserRoles.Administrator);
         var levelId = user.GetProfileLevelId();
         var level = levelId.HasValue ? _levels.GetLevel(levelId.Value) : null;
-        var isOwnUnrestrictedProfile = User.GetUserId().Equals(userId) && !(level?.IsRestricted ?? user.HasContentRestrictions());
+        // Only the level's or profile's rules make it restricted: having removed things doesn't (Finly)
+        var isOwnUnrestrictedProfile = User.GetUserId().Equals(userId) && !(level?.IsRestricted ?? user.HasRestrictionRules());
         if (!isAdministrator && !isOwnUnrestrictedProfile)
         {
             return StatusCode(StatusCodes.Status403Forbidden, "A parent needs to put this back.");
@@ -152,13 +155,13 @@ public class HiddenItemsController : BaseJellyfinApiController
     }
 
     /// <summary>
-    /// Removes an item from every profile on a level, such as all Child profiles. Anyone signed in can do this for a
-    /// level with restrictions, it only ever hides things.
+    /// Removes an item from every profile on a level, such as all Child profiles. Only parents (administrators) can do
+    /// this; anyone can remove things from their own profile.
     /// </summary>
     /// <param name="itemId">The item id.</param>
     /// <param name="levelId">The profile level id.</param>
     /// <response code="200">The number of profiles it was removed from.</response>
-    /// <response code="403">Only administrators can do this for a level without restrictions.</response>
+    /// <response code="403">Only parents can do this.</response>
     /// <response code="404">Item or level not found.</response>
     /// <returns>The number of profiles changed.</returns>
     [HttpPost("Items/{itemId}/HideFromLevel/{levelId}")]
@@ -168,45 +171,55 @@ public class HiddenItemsController : BaseJellyfinApiController
     public async Task<ActionResult<int>> HideFromLevel([FromRoute, Required] Guid itemId, [FromRoute, Required] Guid levelId)
     {
         var level = _levels.GetLevel(levelId);
-        if (level is null || _libraryManager.GetItemById(itemId) is null)
+        var item = _libraryManager.GetItemById(itemId);
+        if (level is null || item is null)
         {
             return NotFound();
         }
 
-        // Hiding things from adults is theirs to decide
-        if (!level.IsRestricted && !User.IsInRole(UserRoles.Administrator))
+        // What a whole level sees is for parents to decide (Finly)
+        if (!User.IsInRole(UserRoles.Administrator))
         {
-            return StatusCode(StatusCodes.Status403Forbidden, "Only administrators can do this for this level.");
+            return StatusCode(StatusCodes.Status403Forbidden, "Only parents can remove things from everyone on a level.");
         }
 
         var members = _userManager.GetUsers().Where(u => levelId.Equals(u.GetProfileLevelId())).ToList();
         foreach (var member in members)
         {
-            await RemoveFromProfileAsync(member.Id, itemId).ConfigureAwait(false);
+            await RemoveFromProfileAsync(member.Id, itemId, ItemIdentity.FromItem(item), true).ConfigureAwait(false);
         }
 
         return members.Count;
     }
 
     /// <summary>
-    /// Takes an item out of a profile: an item only there because it was allowed stops being allowed, and anything the
-    /// profile would still see goes on its removed list.
+    /// Takes an item out of a profile: anything the profile would still see goes on its removed list. When a parent
+    /// does it, an item only there because it was allowed stops being allowed too; when people remove something from
+    /// their own profile a parent's allowance stays, the removal simply wins while it lasts.
     /// </summary>
-    private async Task RemoveFromProfileAsync(Guid userId, Guid itemId)
+    private async Task RemoveFromProfileAsync(Guid userId, Guid itemId, ItemIdentity? identity, bool byParent)
     {
-        await _userManager.SetItemAllowedAsync(userId, itemId, false).ConfigureAwait(false);
+        if (byParent)
+        {
+            await _userManager.SetItemAllowedAsync(userId, itemId, false).ConfigureAwait(false);
+        }
 
         var user = _userManager.GetUserById(userId);
-        var stillVisible = user is not null && _libraryManager.GetItemIds(new InternalItemsQuery(user)
+        if (user is not null && CanSee(user, itemId))
+        {
+            await _userManager.SetItemHiddenAsync(userId, itemId, true, identity).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Checks whether a profile sees an item, with all its restrictions.
+    /// </summary>
+    private bool CanSee(Jellyfin.Database.Implementations.Entities.User user, Guid itemId)
+        => _libraryManager.GetItemIds(new InternalItemsQuery(user)
         {
             ItemIds = [itemId],
             DtoOptions = new DtoOptions(false)
         }).Count > 0;
-        if (stillVisible)
-        {
-            await _userManager.SetItemHiddenAsync(userId, itemId, true).ConfigureAwait(false);
-        }
-    }
 
     /// <summary>
     /// Tells which restricted profiles can see each item, for showing parents what the children have (Finly).
@@ -220,7 +233,8 @@ public class HiddenItemsController : BaseJellyfinApiController
     public ActionResult<ProfileAccessResult> GetProfileAccess([FromQuery, ModelBinder(typeof(Jellyfin.Api.ModelBinders.CommaDelimitedCollectionModelBinder))] Guid[] ids)
     {
         var result = new ProfileAccessResult();
-        var profiles = _userManager.GetUsers().Where(u => u.HasContentRestrictions() || IsOnRestrictedLevel(u)).ToList();
+        // Removed or allowed items alone don't make a profile restricted (Finly)
+        var profiles = _userManager.GetUsers().Where(u => u.HasRestrictionRules() || IsOnRestrictedLevel(u)).ToList();
         foreach (var id in ids)
         {
             result.Items[id] = [];
@@ -271,12 +285,13 @@ public class HiddenItemsController : BaseJellyfinApiController
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<ActionResult> AllowItem([FromRoute, Required] Guid userId, [FromRoute, Required] Guid itemId)
     {
-        if (_userManager.GetUserById(userId) is null || _libraryManager.GetItemById(itemId) is null)
+        var item = _libraryManager.GetItemById(itemId);
+        if (_userManager.GetUserById(userId) is null || item is null)
         {
             return NotFound();
         }
 
-        await _userManager.SetItemAllowedAsync(userId, itemId, true).ConfigureAwait(false);
+        await _userManager.SetItemAllowedAsync(userId, itemId, true, ItemIdentity.FromItem(item)).ConfigureAwait(false);
         return NoContent();
     }
 
@@ -306,13 +321,14 @@ public class HiddenItemsController : BaseJellyfinApiController
     /// <summary>
     /// Adds an item to every profile on a level. A level limited to tags, such as Child with the kids tag, gets the
     /// tag added to the item, so profiles joining the level later have it too; other levels allow the item for each
-    /// profile on them. Either way it is put back where it was removed.
+    /// profile on them. Either way it is put back where it was removed. When the tag isn't enough for a profile, for
+    /// example because the item also carries a tag the level blocks, the item is allowed for that profile as well.
     /// </summary>
     /// <param name="itemId">The item id.</param>
     /// <param name="levelId">The profile level id.</param>
-    /// <response code="200">The number of profiles on the level.</response>
+    /// <response code="200">The number of profiles on the level that can now see the item.</response>
     /// <response code="404">Item or level not found.</response>
-    /// <returns>The number of profiles on the level.</returns>
+    /// <returns>The number of profiles on the level that can now see the item.</returns>
     [HttpPost("Items/{itemId}/AllowForLevel/{levelId}")]
     [Authorize(Policy = Policies.RequiresElevation)]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -335,19 +351,33 @@ public class HiddenItemsController : BaseJellyfinApiController
         }
 
         var members = _userManager.GetUsers().Where(u => levelId.Equals(u.GetProfileLevelId())).ToList();
+        var canSee = 0;
         foreach (var member in members)
         {
             if (tagged)
             {
                 await _userManager.SetItemHiddenAsync(member.Id, itemId, false).ConfigureAwait(false);
+
+                // The tag isn't always enough, such as for an item that also has a blocked tag (Finly)
+                var user = _userManager.GetUserById(member.Id);
+                if (user is not null && !CanSee(user, itemId))
+                {
+                    await _userManager.SetItemAllowedAsync(member.Id, itemId, true, ItemIdentity.FromItem(item)).ConfigureAwait(false);
+                }
             }
             else
             {
-                await _userManager.SetItemAllowedAsync(member.Id, itemId, true).ConfigureAwait(false);
+                await _userManager.SetItemAllowedAsync(member.Id, itemId, true, ItemIdentity.FromItem(item)).ConfigureAwait(false);
+            }
+
+            var updated = _userManager.GetUserById(member.Id);
+            if (updated is not null && CanSee(updated, itemId))
+            {
+                canSee++;
             }
         }
 
-        return members.Count;
+        return canSee;
     }
 
     private bool IsOnRestrictedLevel(Jellyfin.Database.Implementations.Entities.User user)

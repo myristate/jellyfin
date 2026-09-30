@@ -260,14 +260,25 @@ namespace MediaBrowser.Controller.Playlists
 
         private bool HasParentalAllowedChild(User user)
         {
-            if (!user.MaxParentalRatingScore.HasValue)
+            // A playlist with nothing left in it but items the user removed goes too (Finly)
+            var hasHiddenItems = user.GetItemIdSet(PreferenceKind.HiddenItems).Count > 0;
+            if (!user.MaxParentalRatingScore.HasValue && !hasHiddenItems)
             {
                 return true;
             }
 
             var linkedItems = GetLinkedChildren();
+            if (linkedItems.Count == 0)
+            {
+                return true;
+            }
 
-            return linkedItems.Count == 0 || linkedItems.Any(child => child.IsParentalAllowed(user, true));
+            if (hasHiddenItems && linkedItems.All(child => child.IsHiddenBy(user)))
+            {
+                return false;
+            }
+
+            return !user.MaxParentalRatingScore.HasValue || linkedItems.Any(child => child.IsParentalAllowed(user, true));
         }
 
         public override bool CanDelete(User user)

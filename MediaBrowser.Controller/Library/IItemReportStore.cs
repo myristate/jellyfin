@@ -32,6 +32,13 @@ public interface IItemReportStore
     ItemReport? SetResolved(Guid id, bool resolved);
 
     /// <summary>
+    /// Counts a report the user is about to make towards the hourly limit, so nobody can flood the list.
+    /// </summary>
+    /// <param name="userId">The user id.</param>
+    /// <returns><c>false</c> when the user has made too many reports in the last hour.</returns>
+    bool TryCountReport(Guid userId);
+
+    /// <summary>
     /// Deletes a report.
     /// </summary>
     /// <param name="id">The report id.</param>

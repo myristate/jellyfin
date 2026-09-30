@@ -48,6 +48,7 @@ namespace Jellyfin.Server.Implementations.Events
             collection.AddScoped<IEventConsumer<PendingRestartEventArgs>, PendingRestartNotifier>();
             collection.AddScoped<IEventConsumer<TaskCompletionEventArgs>, TaskCompletedLogger>();
             collection.AddScoped<IEventConsumer<TaskCompletionEventArgs>, TaskCompletedNotifier>();
+            collection.AddScoped<IEventConsumer<TaskCompletionEventArgs>, RelinkRemovedItemsAfterScan>();
 
             // Update consumers
             collection.AddScoped<IEventConsumer<PluginInstallationCancelledEventArgs>, PluginInstallationCancelledNotifier>();
@@ -65,6 +66,7 @@ namespace Jellyfin.Server.Implementations.Events
             collection.AddScoped<IEventConsumer<UserDeletedEventArgs>, UserDeletedLogger>();
             collection.AddScoped<IEventConsumer<UserDeletedEventArgs>, UserDeletedNotifier>();
             collection.AddScoped<IEventConsumer<UserLockedOutEventArgs>, UserLockedOutLogger>();
+            collection.AddScoped<IEventConsumer<UserPinLockedOutEventArgs>, UserPinLockedOutLogger>();
             collection.AddScoped<IEventConsumer<UserPasswordChangedEventArgs>, UserPasswordChangedLogger>();
             collection.AddScoped<IEventConsumer<UserUpdatedEventArgs>, UserUpdatedNotifier>();
         }

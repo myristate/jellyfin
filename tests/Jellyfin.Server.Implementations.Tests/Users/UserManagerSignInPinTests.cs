@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Emby.Server.Implementations.Cryptography;
 using Jellyfin.Data;
+using Jellyfin.Data.Events.Users;
 using Jellyfin.Database.Implementations;
 using Jellyfin.Database.Implementations.Enums;
 using Jellyfin.Database.Implementations.Locking;
@@ -34,6 +35,8 @@ public sealed class UserManagerSignInPinTests : IDisposable
 
     private readonly SqliteConnection _connection;
     private readonly DbContextOptions<JellyfinDbContext> _dbOptions;
+    private readonly Mock<IEventManager> _eventManager = new();
+    private readonly TestTimeProvider _time = new();
     private readonly UserManager _userManager;
 
     public UserManagerSignInPinTests()
@@ -45,6 +48,17 @@ public sealed class UserManagerSignInPinTests : IDisposable
         using var ctx = CreateDbContext();
         ctx.Database.EnsureCreated();
 
+        _userManager = CreateUserManager();
+    }
+
+    public void Dispose()
+    {
+        _userManager.Dispose();
+        _connection.Dispose();
+    }
+
+    private UserManager CreateUserManager()
+    {
         var factory = new Mock<IDbContextFactory<JellyfinDbContext>>();
         factory.Setup(f => f.CreateDbContext()).Returns(CreateDbContext);
         factory.Setup(f => f.CreateDbContextAsync(It.IsAny<CancellationToken>())).ReturnsAsync(CreateDbContext);
@@ -61,22 +75,19 @@ public sealed class UserManagerSignInPinTests : IDisposable
         var appHost = new Mock<IApplicationHost>();
         var defaultAuthProvider = new DefaultAuthenticationProvider(NullLogger<DefaultAuthenticationProvider>.Instance, new CryptographyProvider());
 
-        _userManager = new UserManager(
+        return new UserManager(
             factory.Object,
-            new Mock<IEventManager>().Object,
+            _eventManager.Object,
             network.Object,
             appHost.Object,
             new Mock<IImageProcessor>().Object,
             NullLogger<UserManager>.Instance,
             configManager.Object,
             new IPasswordResetProvider[] { new DefaultPasswordResetProvider(configManager.Object, appHost.Object) },
-            new IAuthenticationProvider[] { defaultAuthProvider, new InvalidAuthProvider() });
-    }
-
-    public void Dispose()
-    {
-        _userManager.Dispose();
-        _connection.Dispose();
+            new IAuthenticationProvider[] { defaultAuthProvider, new InvalidAuthProvider() })
+        {
+            TimeProvider = _time
+        };
     }
 
     [Fact]
@@ -199,6 +210,250 @@ public sealed class UserManagerSignInPinTests : IDisposable
 #pragma warning restore CS0618
     }
 
+    [Fact]
+    public async Task Pin_IsNeverTheCurrentPassword()
+    {
+        var user = await _userManager.CreateUserAsync("ryan");
+        await _userManager.ChangePassword(user.Id, "secret");
+        await _userManager.SetPinAsync(user.Id, "1234");
+
+        Assert.Null(await _userManager.AuthenticateUser("ryan", "1234", Home, false, false));
+        Assert.NotNull(await _userManager.AuthenticateUser("ryan", "secret", Home, false, false));
+
+        // Normal sign in still takes the PIN
+        Assert.NotNull(await _userManager.AuthenticateUser("ryan", "1234", Home, false));
+    }
+
+    [Fact]
+    public async Task PinOnlyProfile_CantConfirmAnEmptyPassword()
+    {
+        var user = await _userManager.CreateUserAsync("calum");
+        await _userManager.SetPinAsync(user.Id, "4321");
+
+        Assert.Null(await _userManager.AuthenticateUser("calum", string.Empty, Home, false, false));
+        Assert.Null(await _userManager.AuthenticateUser("calum", "4321", Home, false, false));
+    }
+
+    [Fact]
+    public async Task WrongPins_AreRememberedAfterARestart()
+    {
+        var user = await _userManager.CreateUserAsync("catriona");
+        await _userManager.ChangePassword(user.Id, "secret");
+        await _userManager.SetPinAsync(user.Id, "1234");
+
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.Null(await _userManager.AuthenticateUser("catriona", "9999", Home, false));
+        }
+
+        // A new user manager, as after restarting the server, still refuses the PIN
+        using var restarted = CreateUserManager();
+        var error = await Assert.ThrowsAsync<SecurityException>(() => restarted.AuthenticateUser("catriona", "1234", Home, false));
+        Assert.StartsWith("Too many wrong PINs, try again in", error.Message, StringComparison.Ordinal);
+
+        _eventManager.Verify(e => e.PublishAsync(It.Is<UserPinLockedOutEventArgs>(a => !a.Disabled && a.Lockout == TimeSpan.FromSeconds(30))), Times.Once);
+    }
+
+    [Fact]
+    public async Task TwentyWrongPins_TurnPinSignInOff_UntilThePasswordIsUsed()
+    {
+        var user = await _userManager.CreateUserAsync("ryan");
+        await _userManager.ChangePassword(user.Id, "secret");
+        await _userManager.SetPinAsync(user.Id, "1234");
+
+        await EnterWrongPinsAsync("ryan", 20);
+
+        // Even the right PIN is refused, however long the wait, and the apps don't offer the PIN pad
+        _time.Advance(TimeSpan.FromHours(2));
+        var error = await Assert.ThrowsAsync<SecurityException>(() => _userManager.AuthenticateUser("ryan", "1234", Home, false));
+        Assert.Contains("turned off", error.Message, StringComparison.Ordinal);
+        Assert.False(_userManager.GetUserDto(_userManager.GetUserById(user.Id)!, Home).HasPin);
+        _eventManager.Verify(e => e.PublishAsync(It.Is<UserPinLockedOutEventArgs>(a => a.Disabled)), Times.Once);
+
+        // A new user manager doesn't forget it
+        using (var restarted = CreateUserManager())
+        {
+            await Assert.ThrowsAsync<SecurityException>(() => restarted.AuthenticateUser("ryan", "1234", Home, false));
+        }
+
+        // Signing in with the password turns it back on
+        Assert.NotNull(await _userManager.AuthenticateUser("ryan", "secret", Home, false));
+        Assert.NotNull(await _userManager.AuthenticateUser("ryan", "1234", Home, false));
+        Assert.True(_userManager.GetUserDto(_userManager.GetUserById(user.Id)!, Home).HasPin);
+    }
+
+    [Fact]
+    public async Task WrongPins_OlderThanADay_DontTurnPinSignInOff()
+    {
+        var user = await _userManager.CreateUserAsync("ryan");
+        await _userManager.ChangePassword(user.Id, "secret");
+        await _userManager.SetPinAsync(user.Id, "1234");
+
+        await EnterWrongPinsAsync("ryan", 19);
+        _time.Advance(TimeSpan.FromHours(25));
+        await EnterWrongPinsAsync("ryan", 1);
+
+        Assert.NotNull(await _userManager.AuthenticateUser("ryan", "1234", Home, false));
+    }
+
+    [Fact]
+    public async Task AnAdministrator_TurnsPinSignInBackOn()
+    {
+        var user = await _userManager.CreateUserAsync("calum");
+        await _userManager.SetPinAsync(user.Id, "4321");
+        await EnterWrongPinsAsync("calum", 20);
+
+        await _userManager.ClearPinLockoutAsync(user.Id);
+
+        Assert.NotNull(await _userManager.AuthenticateUser("calum", "4321", Home, false));
+    }
+
+    [Fact]
+    public async Task SettingThePinAgain_TurnsPinSignInBackOn()
+    {
+        var user = await _userManager.CreateUserAsync("calum");
+        await _userManager.SetPinAsync(user.Id, "4321");
+        await EnterWrongPinsAsync("calum", 20);
+
+        await _userManager.SetPinAsync(user.Id, "1111");
+
+        Assert.NotNull(await _userManager.AuthenticateUser("calum", "1111", Home, false));
+    }
+
+    [Fact]
+    public async Task RightPin_ForgetsTheWrongOnes()
+    {
+        var user = await _userManager.CreateUserAsync("ryan");
+        await _userManager.SetPinAsync(user.Id, "1234");
+        await EnterWrongPinsAsync("ryan", 4);
+
+        Assert.NotNull(await _userManager.AuthenticateUser("ryan", "1234", Home, false));
+
+        // Four more wrong ones are free again
+        await EnterWrongPinsAsync("ryan", 4);
+        Assert.NotNull(await _userManager.AuthenticateUser("ryan", "1234", Home, false));
+    }
+
+    [Fact]
+    public async Task ChangingThePin_RaisesUserUpdated()
+    {
+        var user = await _userManager.CreateUserAsync("ryan");
+        var updated = 0;
+        _userManager.OnUserUpdated += (_, _) => updated++;
+
+        await _userManager.SetPinAsync(user.Id, "1234");
+        await _userManager.SetPinAsync(user.Id, null);
+
+        Assert.Equal(2, updated);
+        _eventManager.Verify(e => e.PublishAsync(It.IsAny<UserUpdatedEventArgs>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Pin_OnlyForUsersOfTheServersOwnPasswords()
+    {
+        var user = await _userManager.CreateUserAsync("ldap");
+        await _userManager.SetPinAsync(user.Id, "1234");
+        const string OtherProvider = "Jellyfin.Plugin.LDAP_Auth.LdapAuthenticationProviderPlugin";
+        await using (var ctx = CreateDbContext())
+        {
+            var dbUser = await ctx.Users.FirstAsync(u => u.Id.Equals(user.Id), TestContext.Current.CancellationToken);
+            dbUser.AuthenticationProviderId = OtherProvider;
+            await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        await Assert.ThrowsAsync<ArgumentException>(() => _userManager.SetPinAsync(user.Id, "1234"));
+
+        // The PIN left from before doesn't sign in, and the sign in doesn't change the user's provider
+        Assert.Null(await _userManager.AuthenticateUser("ldap", "1234", Home, false));
+        var stored = _userManager.GetUserById(user.Id)!;
+        Assert.Equal(OtherProvider, stored.AuthenticationProviderId);
+        Assert.False(_userManager.GetUserDto(stored, Home).HasPin);
+    }
+
+    [Fact]
+    public async Task UnreadablePinHash_IsIgnored()
+    {
+        var user = await _userManager.CreateUserAsync("ryan");
+        await _userManager.ChangePassword(user.Id, "secret");
+        await using (var ctx = CreateDbContext())
+        {
+            var dbUser = await ctx.Users.Include(u => u.Preferences).FirstAsync(u => u.Id.Equals(user.Id), TestContext.Current.CancellationToken);
+            dbUser.SetPreference(PreferenceKind.SignInPinHash, ["not a hash"]);
+            await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        Assert.Null(await _userManager.AuthenticateUser("ryan", "1234", Home, false));
+        Assert.NotNull(await _userManager.AuthenticateUser("ryan", "secret", Home, false));
+        Assert.False(_userManager.GetUserDto(_userManager.GetUserById(user.Id)!, Home).HasPin);
+    }
+
+    [Fact]
+    public async Task DisabledAdministrator_DoesNotCountAsTheOneWithAPassword()
+    {
+        var ryan = await CreateAdminAsync("ryan", "secret");
+        var catriona = await CreateAdminAsync("catriona", "secret");
+        await using (var ctx = CreateDbContext())
+        {
+            var dbUser = await ctx.Users.Include(u => u.Permissions).FirstAsync(u => u.Id.Equals(catriona.Id), TestContext.Current.CancellationToken);
+            dbUser.SetPermission(PermissionKind.IsDisabled, true);
+            await ctx.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        Assert.False(_userManager.HasOtherAdministratorWithPassword(ryan.Id));
+        await Assert.ThrowsAsync<ArgumentException>(() => _userManager.ChangePassword(ryan.Id, string.Empty));
+    }
+
+    [Fact]
+    public async Task LastAdministratorWithPassword_CantBeDemoted()
+    {
+        var ryan = await CreateAdminAsync("ryan", "secret");
+        await CreateAdminAsync("catriona", null);
+
+        var policy = _userManager.GetUserDto(ryan).Policy!;
+        policy.IsAdministrator = false;
+
+        await Assert.ThrowsAsync<ArgumentException>(() => _userManager.UpdatePolicyAsync(ryan.Id, policy));
+        Assert.True(_userManager.GetUserById(ryan.Id)!.HasPermission(PermissionKind.IsAdministrator));
+    }
+
+    [Fact]
+    public async Task TwoAdministrators_CantBothDropTheirPasswordAtOnce()
+    {
+        var ryan = await CreateAdminAsync("ryan", "secret");
+        var catriona = await CreateAdminAsync("catriona", "secret");
+
+        var results = await Task.WhenAll(
+            Attempt(() => _userManager.ChangePassword(ryan.Id, string.Empty)),
+            Attempt(() => _userManager.ChangePassword(catriona.Id, string.Empty)));
+
+        Assert.Single(results, succeeded => succeeded);
+        Assert.True(_userManager.HasOtherAdministratorWithPassword(Guid.NewGuid()));
+
+        static async Task<bool> Attempt(Func<Task> change)
+        {
+            await Task.Yield();
+            try
+            {
+                await change();
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+    }
+
+    private async Task EnterWrongPinsAsync(string username, int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            // Wait out any lockout, so every wrong PIN is checked
+            _time.Advance(TimeSpan.FromMinutes(31));
+            Assert.Null(await _userManager.AuthenticateUser(username, "9999", Home, false));
+        }
+    }
+
     private async Task<Jellyfin.Database.Implementations.Entities.User> CreateAdminAsync(string name, string? password)
     {
         var user = await _userManager.CreateUserAsync(name);
@@ -224,5 +479,14 @@ public sealed class UserManagerSignInPinTests : IDisposable
             NullLogger<JellyfinDbContext>.Instance,
             new SqliteDatabaseProvider(null!, NullLogger<SqliteDatabaseProvider>.Instance),
             new NoLockBehavior(NullLogger<NoLockBehavior>.Instance));
+    }
+
+    private sealed class TestTimeProvider : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 9, 30, 18, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan by) => _now += by;
     }
 }

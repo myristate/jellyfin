@@ -105,11 +105,19 @@ namespace MediaBrowser.Controller.Library
 
         /// <summary>
         /// Sets or removes the user's sign in PIN, which signs them in on the home network in place of their password.
+        /// Either way the wrong PINs held against the user are forgotten and PIN sign in is turned back on.
         /// </summary>
         /// <param name="userId">The user id.</param>
         /// <param name="pin">The PIN, or <c>null</c> to remove it.</param>
         /// <returns>A task representing the change.</returns>
         Task SetPinAsync(Guid userId, string? pin);
+
+        /// <summary>
+        /// Forgets the wrong PINs held against the user and turns PIN sign in back on after too many of them (Finly).
+        /// </summary>
+        /// <param name="userId">The user id.</param>
+        /// <returns>A task representing the change.</returns>
+        Task ClearPinLockoutAsync(Guid userId);
 
         /// <summary>
         /// Removes an item from the user's library, or puts it back. A removed item and everything below it, such as
@@ -118,8 +126,9 @@ namespace MediaBrowser.Controller.Library
         /// <param name="userId">The user id.</param>
         /// <param name="itemId">The item id.</param>
         /// <param name="hidden">Whether the item is removed.</param>
+        /// <param name="identity">What identifies the item apart from its id, remembered to find it again when it moves.</param>
         /// <returns>A task representing the change.</returns>
-        Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden);
+        Task SetItemHiddenAsync(Guid userId, Guid itemId, bool hidden, ItemIdentity? identity = null);
 
         /// <summary>
         /// Lets the user see an item although their rating or tags would hide it, or takes that back. Allowing an item
@@ -128,8 +137,20 @@ namespace MediaBrowser.Controller.Library
         /// <param name="userId">The user id.</param>
         /// <param name="itemId">The item id.</param>
         /// <param name="allowed">Whether the item is allowed.</param>
+        /// <param name="identity">What identifies the item apart from its id, remembered to find it again when it moves.</param>
         /// <returns>A task representing the change.</returns>
-        Task SetItemAllowedAsync(Guid userId, Guid itemId, bool allowed);
+        Task SetItemAllowedAsync(Guid userId, Guid itemId, bool allowed, ItemIdentity? identity = null);
+
+        /// <summary>
+        /// Brings the user's removed and allowed items up to date with the library (Finly): items that moved get their
+        /// new id, and items missing for longer than <paramref name="gracePeriod"/> are dropped.
+        /// </summary>
+        /// <param name="userId">The user id.</param>
+        /// <param name="missingItems">The listed items no longer in the library, each with the id of the same item found
+        /// again under a new id, or <c>null</c> when it wasn't found.</param>
+        /// <param name="gracePeriod">How long an item may be missing before it is dropped.</param>
+        /// <returns>A task representing the change.</returns>
+        Task RelinkItemsAsync(Guid userId, IReadOnlyDictionary<Guid, Guid?> missingItems, TimeSpan gracePeriod);
 
         /// <summary>
         /// Resets the password.
@@ -163,6 +184,18 @@ namespace MediaBrowser.Controller.Library
         /// <param name="isUserSession">Specifies if a user session.</param>
         /// <returns>User wrapped in awaitable task.</returns>
         Task<User?> AuthenticateUser(string username, string password, string remoteEndPoint, bool isUserSession);
+
+        /// <summary>
+        /// Authenticates the user, optionally without accepting their sign in PIN (Finly). Checking a user's current
+        /// password, before changing their password or PIN, must not accept the PIN.
+        /// </summary>
+        /// <param name="username">The user.</param>
+        /// <param name="password">The password to use.</param>
+        /// <param name="remoteEndPoint">Remove endpoint to use.</param>
+        /// <param name="isUserSession">Specifies if a user session.</param>
+        /// <param name="allowPin">Whether the user's PIN may be entered in place of the password.</param>
+        /// <returns>User wrapped in awaitable task.</returns>
+        Task<User?> AuthenticateUser(string username, string password, string remoteEndPoint, bool isUserSession, bool allowPin);
 
         /// <summary>
         /// Starts the forgot password process.

@@ -2,8 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
-using Jellyfin.Extensions.Json;
+using Jellyfin.Server.Implementations.StorageHelpers;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Users;
@@ -13,12 +12,12 @@ namespace Jellyfin.Server.Implementations.Users;
 
 /// <summary>
 /// Keeps the profile levels in profilelevels.json in the configuration folder (Finly). The first time, it starts with
-/// Child (up to PG), Teen (up to 15) and Adult (no limits).
+/// Child (up to PG), Teen (up to 15) and Adult (no limits). A file that can't be read is set aside as
+/// profilelevels.json.bad-&lt;time&gt; and the server runs without levels, rather than writing the defaults over it.
 /// </summary>
 public sealed class ProfileLevelStore : IProfileLevelStore
 {
-    private readonly string _path;
-    private readonly ILogger<ProfileLevelStore> _logger;
+    private readonly JsonListFile<ProfileLevel> _file;
     private readonly object _lock = new();
     private List<ProfileLevel>? _levels;
 
@@ -29,8 +28,7 @@ public sealed class ProfileLevelStore : IProfileLevelStore
     /// <param name="logger">The logger.</param>
     public ProfileLevelStore(IApplicationPaths appPaths, ILogger<ProfileLevelStore> logger)
     {
-        _path = Path.Combine(appPaths.ConfigurationDirectoryPath, "profilelevels.json");
-        _logger = logger;
+        _file = new JsonListFile<ProfileLevel>(Path.Combine(appPaths.ConfigurationDirectoryPath, "profilelevels.json"), logger);
     }
 
     /// <inheritdoc />
@@ -115,17 +113,11 @@ public sealed class ProfileLevelStore : IProfileLevelStore
             return _levels;
         }
 
-        if (File.Exists(_path))
+        // Only a missing file, the first time, gets the default levels
+        _levels = _file.Read();
+        if (_levels is not null)
         {
-            try
-            {
-                _levels = JsonSerializer.Deserialize<List<ProfileLevel>>(File.ReadAllText(_path), JsonDefaults.Options) ?? [];
-                return _levels;
-            }
-            catch (Exception ex) when (ex is IOException or JsonException)
-            {
-                _logger.LogError(ex, "Unable to read the profile levels from {Path}, starting again", _path);
-            }
+            return _levels;
         }
 
         _levels =
@@ -140,10 +132,7 @@ public sealed class ProfileLevelStore : IProfileLevelStore
 
     private void Write(List<ProfileLevel> levels)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var temp = _path + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(levels, JsonDefaults.Options));
-        File.Move(temp, _path, true);
+        _file.Write(levels);
         _levels = levels;
     }
 }

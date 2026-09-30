@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Frozen;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
 using Jellyfin.Database.Implementations.Entities;
@@ -16,6 +19,13 @@ public static class UserEntityExtensions
     /// The values being delimited here are Guids, so commas work as they do not appear in Guids.
     /// </summary>
     private const char Delimiter = ',';
+
+    // How many parsed item id lists are kept before the cache starts again (Finly)
+    private const int MaxCachedItemIdSets = 256;
+
+    // Parsed item id lists by their raw preference value, so the removed and allowed items aren't parsed again for
+    // every item checked (Finly). The value is the key, so a changed list simply misses the cache.
+    private static readonly ConcurrentDictionary<string, FrozenSet<Guid>> _itemIdSets = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Checks whether the user has the specified permission.
@@ -100,6 +110,38 @@ public static class UserEntityExtensions
     }
 
     /// <summary>
+    /// Gets a preference that holds item ids, such as the user's removed or allowed items, as a set (Finly). The set is
+    /// parsed once for each value of the preference and shared, so checking many items against it stays cheap.
+    /// </summary>
+    /// <param name="entity">The user.</param>
+    /// <param name="preference">The preference kind.</param>
+    /// <returns>The item ids.</returns>
+    public static IReadOnlySet<Guid> GetItemIdSet(this User entity, PreferenceKind preference)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+
+        var value = entity.Preferences.FirstOrDefault(p => p.Kind == preference)?.Value;
+        if (string.IsNullOrEmpty(value))
+        {
+            return FrozenSet<Guid>.Empty;
+        }
+
+        if (_itemIdSets.TryGetValue(value, out var cached))
+        {
+            return cached;
+        }
+
+        if (_itemIdSets.Count >= MaxCachedItemIdSets)
+        {
+            _itemIdSets.Clear();
+        }
+
+        var set = entity.GetPreferenceValues<Guid>(preference).ToFrozenSet();
+        _itemIdSets.TryAdd(value, set);
+        return set;
+    }
+
+    /// <summary>
     /// Sets the specified preference to the given value.
     /// </summary>
     /// <param name="entity">The entity to update.</param>
@@ -171,14 +213,28 @@ public static class UserEntityExtensions
     {
         ArgumentNullException.ThrowIfNull(entity);
 
+        return entity.HasRestrictionRules()
+            || entity.GetPreference(PreferenceKind.HiddenItems).Length > 0
+            || entity.GetPreference(PreferenceKind.AllowedItems).Length > 0;
+    }
+
+    /// <summary>
+    /// Checks whether a library, parental rating or tag rule keeps content from this user (Finly). Unlike
+    /// <see cref="HasContentRestrictions"/> the items the user or a parent removed or allowed one by one don't count,
+    /// so an adult who removed a film isn't taken for a restricted profile.
+    /// </summary>
+    /// <param name="entity">The user to check.</param>
+    /// <returns><c>True</c> if a rule hides some content in the library from this user.</returns>
+    public static bool HasRestrictionRules(this User entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+
         return !entity.HasPermission(PermissionKind.EnableAllFolders)
             || entity.GetPreference(PreferenceKind.BlockedMediaFolders).Length > 0
             || entity.MaxParentalRatingScore.HasValue
             || entity.GetPreference(PreferenceKind.BlockedTags).Length > 0
             || entity.GetPreference(PreferenceKind.AllowedTags).Length > 0
-            || entity.GetPreference(PreferenceKind.BlockUnratedItems).Length > 0
-            || entity.GetPreference(PreferenceKind.HiddenItems).Length > 0
-            || entity.GetPreference(PreferenceKind.AllowedItems).Length > 0;
+            || entity.GetPreference(PreferenceKind.BlockUnratedItems).Length > 0;
     }
 
     /// <summary>

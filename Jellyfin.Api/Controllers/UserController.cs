@@ -113,12 +113,17 @@ public class UserController : BaseJellyfinApiController
     public ActionResult<IEnumerable<UserDto>> GetPublicUsers()
     {
         // If the startup wizard hasn't been completed then just return all users
-        if (!_config.Configuration.IsStartupWizardCompleted)
+        var users = _config.Configuration.IsStartupWizardCompleted
+            ? Get(false, false, true, true)
+            : Get(false, false, false, false);
+
+        // Away from home, don't tell anyone which profiles have no password (Finly). PINs only work at home anyway.
+        if (!_networkManager.IsInLocalNetwork(HttpContext.GetNormalizedRemoteIP()))
         {
-            return Ok(Get(false, false, false, false));
+            users = users.Select(MaskSignInOptions);
         }
 
-        return Ok(Get(false, false, true, true));
+        return Ok(users);
     }
 
     /// <summary>
@@ -264,7 +269,7 @@ public class UserController : BaseJellyfinApiController
 
     /// <summary>
     /// Sets or removes a user's sign in PIN (Finly). A PIN signs the user in on the home network in place of their
-    /// password.
+    /// password. The user's other sessions are signed out, as when the password changes.
     /// </summary>
     /// <param name="userId">The user id.</param>
     /// <param name="request">The <see cref="UpdateUserPin"/> request.</param>
@@ -300,22 +305,37 @@ public class UserController : BaseJellyfinApiController
             return BadRequest("A PIN must be 4 digits.");
         }
 
-        // Like the password: changing your own needs your current password or PIN, an administrator can change anyone's
-        if (!User.IsInRole(UserRoles.Administrator) || User.GetUserId().Equals(user.Id))
+        // Like the password: changing your own needs your current password, never the PIN, an administrator can
+        // change anyone else's
+        if (!await IsCurrentPasswordConfirmedAsync(user, request.CurrentPw).ConfigureAwait(false))
         {
-            var success = await _userManager.AuthenticateUser(
-                user.Username,
-                request.CurrentPw ?? string.Empty,
-                HttpContext.GetNormalizedRemoteIP().ToString(),
-                false).ConfigureAwait(false);
-
-            if (success is null)
-            {
-                return StatusCode(StatusCodes.Status403Forbidden, "Invalid user or password entered.");
-            }
+            return StatusCode(StatusCodes.Status403Forbidden, "Invalid user or password entered.");
         }
 
         await _userManager.SetPinAsync(user.Id, request.ResetPin ? null : request.NewPin).ConfigureAwait(false);
+        await _sessionManager.RevokeUserTokens(user.Id, User.GetToken()).ConfigureAwait(false);
+        return NoContent();
+    }
+
+    /// <summary>
+    /// Turns a user's PIN sign in back on after too many wrong PINs, and forgets the wrong PINs (Finly).
+    /// </summary>
+    /// <param name="userId">The user id.</param>
+    /// <response code="204">PIN sign in is on again.</response>
+    /// <response code="404">User not found.</response>
+    /// <returns>A <see cref="NoContentResult"/> indicating success, or a <see cref="NotFoundResult"/>.</returns>
+    [HttpPost("Pin/Unlock")]
+    [Authorize(Policy = Policies.RequiresElevation)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> UnlockUserPin([FromQuery, Required] Guid userId)
+    {
+        if (_userManager.GetUserById(userId) is null)
+        {
+            return NotFound();
+        }
+
+        await _userManager.ClearPinLockoutAsync(userId).ConfigureAwait(false);
         return NoContent();
     }
 
@@ -349,26 +369,19 @@ public class UserController : BaseJellyfinApiController
             return StatusCode(StatusCodes.Status403Forbidden, "User is not allowed to update the password.");
         }
 
+        // Changing or resetting your own password needs the current one, never the PIN (Finly); an administrator can
+        // change or reset anyone else's
+        if (!await IsCurrentPasswordConfirmedAsync(user, request.CurrentPw).ConfigureAwait(false))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, "Invalid user or password entered.");
+        }
+
         if (request.ResetPassword)
         {
             await _userManager.ResetPassword(user.Id).ConfigureAwait(false);
         }
         else
         {
-            if (!User.IsInRole(UserRoles.Administrator) || (userId.HasValue && User.GetUserId().Equals(userId.Value)))
-            {
-                var success = await _userManager.AuthenticateUser(
-                    user.Username,
-                    request.CurrentPw ?? string.Empty,
-                    HttpContext.GetNormalizedRemoteIP().ToString(),
-                    false).ConfigureAwait(false);
-
-                if (success is null)
-                {
-                    return StatusCode(StatusCodes.Status403Forbidden, "Invalid user or password entered.");
-                }
-            }
-
             await _userManager.ChangePassword(user.Id, request.NewPw ?? string.Empty).ConfigureAwait(false);
 
             var currentToken = User.GetToken();
@@ -492,6 +505,14 @@ public class UserController : BaseJellyfinApiController
             {
                 return StatusCode(StatusCodes.Status403Forbidden, "There must be at least one user in the system with administrative access.");
             }
+        }
+
+        // A level that doesn't exist can't be joined (Finly)
+        if (newPolicy.ProfileLevelId.HasValue
+            && !newPolicy.ProfileLevelId.Value.Equals(Guid.Empty)
+            && _profileLevels.GetLevel(newPolicy.ProfileLevelId.Value) is null)
+        {
+            return BadRequest("The profile level doesn't exist.");
         }
 
         // A profile on a level has the level's restrictions
@@ -673,6 +694,39 @@ public class UserController : BaseJellyfinApiController
         }
 
         return _userManager.GetUserDto(user);
+    }
+
+    /// <summary>
+    /// Checks the current password given when changing a user's password or PIN (Finly). Only an administrator
+    /// changing someone else's doesn't need it, and the PIN never counts as the password.
+    /// </summary>
+    /// <param name="user">The user being changed.</param>
+    /// <param name="currentPassword">The current password given.</param>
+    /// <returns><c>true</c> when the change may go ahead.</returns>
+    private async Task<bool> IsCurrentPasswordConfirmedAsync(Jellyfin.Database.Implementations.Entities.User user, string? currentPassword)
+    {
+        if (User.IsInRole(UserRoles.Administrator) && !User.GetUserId().Equals(user.Id))
+        {
+            return true;
+        }
+
+        var confirmed = await _userManager.AuthenticateUser(
+            user.Username,
+            currentPassword ?? string.Empty,
+            HttpContext.GetNormalizedRemoteIP().ToString(),
+            false,
+            false).ConfigureAwait(false);
+        return confirmed is not null;
+    }
+
+    private static UserDto MaskSignInOptions(UserDto user)
+    {
+#pragma warning disable CS0618 // Finly fills these in again, clients use them to decide whether to ask for a password
+        user.HasPassword = true;
+        user.HasConfiguredPassword = true;
+#pragma warning restore CS0618
+        user.HasPin = false;
+        return user;
     }
 
     private IEnumerable<UserDto> Get(bool? isHidden, bool? isDisabled, bool filterByDevice, bool filterByNetwork)
