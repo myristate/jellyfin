@@ -11,6 +11,7 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.IO;
 using MediaBrowser.Model.LiveTv;
@@ -21,6 +22,11 @@ namespace Jellyfin.LiveTv.TunerHosts
 {
     public class SharedHttpStream : LiveStream, IDirectStreamProvider
     {
+        /// <summary>
+        /// How long to wait for the tuner to answer and to send the first data before giving up on opening.
+        /// </summary>
+        private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(15);
+
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IServerApplicationHost _appHost;
 
@@ -55,9 +61,37 @@ namespace Jellyfin.LiveTv.TunerHosts
             Logger.LogInformation("Opening {StreamType} Live stream from {Url}", typeName, url);
 
             // Response stream is disposed manually.
-            var response = await _httpClientFactory.CreateClient(NamedClient.Default)
-                .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, CancellationToken.None)
-                .ConfigureAwait(false);
+            HttpResponseMessage response;
+            using (var headersTimeout = CancellationTokenSource.CreateLinkedTokenSource(openCancellationToken, LiveStreamCancellationTokenSource.Token))
+            {
+                headersTimeout.CancelAfter(OpenTimeout);
+                try
+                {
+                    response = await _httpClientFactory.CreateClient(NamedClient.Default)
+                        .GetAsync(url, HttpCompletionOption.ResponseHeadersRead, headersTimeout.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!openCancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"No response from the tuner within {OpenTimeout.TotalSeconds} seconds");
+                }
+            }
+
+            // A tuner that can't stream the channel answers with an error, for example an HDHomeRun that has no free
+            // tuner (X-HDHomeRun-Error 805) or can't lock the multiplex (806). Don't treat its error body as video.
+            if (!response.IsSuccessStatusCode)
+            {
+                var tunerError = response.Headers.TryGetValues("X-HDHomeRun-Error", out var values) ? string.Join(", ", values) : null;
+                var status = (int)response.StatusCode;
+                response.Dispose();
+                Logger.LogWarning("Tuner refused {Url} with HTTP {Status} {TunerError}", url, status, tunerError);
+                if (status == 503 || (tunerError is not null && tunerError.StartsWith("805", StringComparison.Ordinal)))
+                {
+                    throw new LiveTvConflictException($"The tuner has no free tuner for this channel ({tunerError ?? status.ToString(CultureInfo.InvariantCulture)})");
+                }
+
+                throw new HttpRequestException($"The tuner refused the stream with HTTP {status} {tunerError}");
+            }
 
             var taskCompletionSource = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -66,7 +100,19 @@ namespace Jellyfin.LiveTv.TunerHosts
             MediaSource.Path = _appHost.GetApiUrlForLocalAccess() + "/LiveTv/LiveStreamFiles/" + UniqueId + "/stream.ts";
             MediaSource.Protocol = MediaProtocol.Http;
 
-            var res = await taskCompletionSource.Task.ConfigureAwait(false);
+            bool res;
+            try
+            {
+                res = await taskCompletionSource.Task.WaitAsync(OpenTimeout, openCancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Headers but no data: stop copying so the tuner is released, and let the client retry or report it
+                Logger.LogWarning("No data from {Url} within {Seconds} seconds, closing the stream", url, OpenTimeout.TotalSeconds);
+                await LiveStreamCancellationTokenSource.CancelAsync().ConfigureAwait(false);
+                throw;
+            }
+
             if (!res)
             {
                 Logger.LogWarning("Zero bytes copied from stream {StreamType} to {FilePath} but no exception raised", GetType().Name, TempFilePath);
