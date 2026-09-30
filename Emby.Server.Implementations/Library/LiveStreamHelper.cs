@@ -113,15 +113,20 @@ namespace Emby.Server.Implementations.Library
                     }
                 }
 
+                // A radio station has no video stream at all. A TV channel that is off air still lists its video stream,
+                // just without data, so it isn't mistaken for radio and kept without its picture.
+                var isRadio = !mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Video)
+                    && mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Audio && !string.IsNullOrEmpty(i.Codec));
+
                 // A video stream without a codec is a stream that sent no data during the probe, for example a channel
                 // that is off air and only broadcasting sound. Treat it as missing rather than as unplayable video.
                 mediaInfo.MediaStreams = mediaInfo.MediaStreams
                     .Where(i => i.Type != MediaStreamType.Video || !string.IsNullOrEmpty(i.Codec))
                     .ToList();
 
-                // Only cache a complete probe: one that caught the picture size. A short probe that just missed a sequence header
-                // is tried again next time instead of being kept for good.
-                if (cacheFilePath is not null && mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Video && i.Width > 0))
+                // Only cache a complete probe: one that caught the picture size, or a radio station's sound. A short probe
+                // that just missed a sequence header is tried again next time instead of being kept for good.
+                if (cacheFilePath is not null && (isRadio || mediaInfo.MediaStreams.Any(i => i.Type == MediaStreamType.Video && i.Width > 0)))
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(cacheFilePath) ?? throw new InvalidOperationException("Path can't be a root directory."));
                     // Create truncates, a shorter result written over a longer one would leave a corrupt file behind
