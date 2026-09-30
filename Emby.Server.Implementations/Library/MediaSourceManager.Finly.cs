@@ -50,6 +50,8 @@ namespace Emby.Server.Implementations.Library
         /// <inheritdoc />
         public async Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> OpenLiveStreamInternal(LiveStreamRequest request, LiveStreamOpenOptions options, CancellationToken cancellationToken)
         {
+            ArgumentNullException.ThrowIfNull(request);
+            ArgumentException.ThrowIfNullOrEmpty(request.OpenToken);
             options ??= new LiveStreamOpenOptions();
 
             ILiveStream liveStream;
