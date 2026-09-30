@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Emby.Server.Implementations.ScheduledTasks.Triggers;
 using Xunit;
 
@@ -29,7 +30,21 @@ namespace Jellyfin.Server.Implementations.Tests.ScheduledTasks
         {
             var lastEnd = _now.AddDays(-30);
 
-            Assert.Equal(TimeSpan.FromMinutes(5), IntervalTrigger.GetDueTime(_now, lastEnd, DateTime.MinValue, _day, true));
+            var due = IntervalTrigger.GetDueTime(_now, lastEnd, DateTime.MinValue, _day, true, "Refresh Guide");
+
+            Assert.Equal(TimeSpan.FromMinutes(5) + IntervalTrigger.GetStartupStagger("Refresh Guide"), due);
+            Assert.InRange(due, TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
+        }
+
+        [Fact]
+        public void GetStartupStagger_SpreadsTasksAndIsStable()
+        {
+            var names = new[] { "Refresh Guide", "Scan Media Library", "Optimize database", "Clean Cache Directory", "Refresh People" };
+            var staggers = Array.ConvertAll(names, IntervalTrigger.GetStartupStagger);
+
+            Assert.All(staggers, s => Assert.InRange(s, TimeSpan.Zero, TimeSpan.FromMinutes(10)));
+            Assert.True(new HashSet<TimeSpan>(staggers).Count > 1);
+            Assert.Equal(IntervalTrigger.GetStartupStagger("Refresh Guide"), IntervalTrigger.GetStartupStagger("Refresh Guide"));
         }
 
         [Fact]

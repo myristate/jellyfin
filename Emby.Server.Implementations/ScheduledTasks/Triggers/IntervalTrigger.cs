@@ -37,7 +37,7 @@ public sealed class IntervalTrigger : ITaskTrigger, IDisposable
     {
         DisposeTimer();
 
-        var dueTime = GetDueTime(DateTime.UtcNow, lastResult?.EndTimeUtc, _lastStartDate, _interval, isApplicationStartup);
+        var dueTime = GetDueTime(DateTime.UtcNow, lastResult?.EndTimeUtc, _lastStartDate, _interval, isApplicationStartup, taskName);
 
         _timer = new Timer(_ => OnTriggered(), null, dueTime, TimeSpan.FromMilliseconds(-1));
     }
@@ -55,8 +55,9 @@ public sealed class IntervalTrigger : ITaskTrigger, IDisposable
     /// <param name="lastStartTime">When this trigger last started the task.</param>
     /// <param name="interval">The interval between runs.</param>
     /// <param name="isApplicationStartup">Whether the server is starting up.</param>
+    /// <param name="taskName">The task name, used to spread overdue tasks out after startup.</param>
     /// <returns>The time to wait.</returns>
-    internal static TimeSpan GetDueTime(DateTime now, DateTime? lastEndTime, DateTime lastStartTime, TimeSpan interval, bool isApplicationStartup)
+    internal static TimeSpan GetDueTime(DateTime now, DateTime? lastEndTime, DateTime lastStartTime, TimeSpan interval, bool isApplicationStartup, string taskName = "")
     {
         DateTime triggerDate;
 
@@ -69,8 +70,10 @@ public sealed class IntervalTrigger : ITaskTrigger, IDisposable
         {
             triggerDate = (lastEndTime.Value > lastStartTime ? lastEndTime.Value : lastStartTime).Add(interval);
 
-            // An overdue task runs soon, but gives a starting server a few minutes to settle first
-            var earliest = now.AddMinutes(isApplicationStartup ? 5 : 1);
+            // An overdue task runs soon, but gives a starting server a few minutes to settle first. Overdue tasks are
+            // spread over a further ten minutes so they don't all start at once, for example a library scan together
+            // with a database optimisation.
+            var earliest = isApplicationStartup ? now.AddMinutes(5).Add(GetStartupStagger(taskName)) : now.AddMinutes(1);
             if (triggerDate < earliest)
             {
                 triggerDate = earliest;
@@ -81,6 +84,23 @@ public sealed class IntervalTrigger : ITaskTrigger, IDisposable
         var maxDueTime = TimeSpan.FromDays(7);
 
         return dueTime > maxDueTime ? maxDueTime : dueTime;
+    }
+
+    /// <summary>
+    /// Gets a delay between zero and ten minutes that is always the same for a task name.
+    /// </summary>
+    /// <param name="taskName">The task name.</param>
+    /// <returns>The delay.</returns>
+    internal static TimeSpan GetStartupStagger(string taskName)
+    {
+        // string.GetHashCode differs between runs, a simple FNV-1a hash keeps each task at the same offset
+        uint hash = 2166136261;
+        foreach (var c in taskName ?? string.Empty)
+        {
+            hash = (hash ^ c) * 16777619;
+        }
+
+        return TimeSpan.FromSeconds(hash % 600);
     }
 
     /// <inheritdoc />
