@@ -1,5 +1,4 @@
 using System;
-using System.Linq;
 using System.Threading;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
@@ -38,28 +37,50 @@ public sealed class IntervalTrigger : ITaskTrigger, IDisposable
     {
         DisposeTimer();
 
-        DateTime now = DateTime.UtcNow;
+        var dueTime = GetDueTime(DateTime.UtcNow, lastResult?.EndTimeUtc, _lastStartDate, _interval, isApplicationStartup);
+
+        _timer = new Timer(_ => OnTriggered(), null, dueTime, TimeSpan.FromMilliseconds(-1));
+    }
+
+    /// <summary>
+    /// Gets how long to wait before the task next runs.
+    /// </summary>
+    /// <remarks>
+    /// The interval counts from the last run rather than from now, so a server that restarts more often than the
+    /// interval (for example a nightly backup that stops the container) still runs the task, instead of pushing it
+    /// back on every start.
+    /// </remarks>
+    /// <param name="now">The current time in UTC.</param>
+    /// <param name="lastEndTime">When the task last finished, or <c>null</c> if it has never run.</param>
+    /// <param name="lastStartTime">When this trigger last started the task.</param>
+    /// <param name="interval">The interval between runs.</param>
+    /// <param name="isApplicationStartup">Whether the server is starting up.</param>
+    /// <returns>The time to wait.</returns>
+    internal static TimeSpan GetDueTime(DateTime now, DateTime? lastEndTime, DateTime lastStartTime, TimeSpan interval, bool isApplicationStartup)
+    {
         DateTime triggerDate;
 
-        if (lastResult is null)
+        if (lastEndTime is null)
         {
             // Task has never been completed before
             triggerDate = now.AddHours(1);
         }
         else
         {
-            triggerDate = new[] { lastResult.EndTimeUtc, _lastStartDate, now.AddMinutes(1) }.Max().Add(_interval);
+            triggerDate = (lastEndTime.Value > lastStartTime ? lastEndTime.Value : lastStartTime).Add(interval);
+
+            // An overdue task runs soon, but gives a starting server a few minutes to settle first
+            var earliest = now.AddMinutes(isApplicationStartup ? 5 : 1);
+            if (triggerDate < earliest)
+            {
+                triggerDate = earliest;
+            }
         }
 
         var dueTime = triggerDate - now;
         var maxDueTime = TimeSpan.FromDays(7);
 
-        if (dueTime > maxDueTime)
-        {
-            dueTime = maxDueTime;
-        }
-
-        _timer = new Timer(_ => OnTriggered(), null, dueTime, TimeSpan.FromMilliseconds(-1));
+        return dueTime > maxDueTime ? maxDueTime : dueTime;
     }
 
     /// <inheritdoc />
