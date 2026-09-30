@@ -74,6 +74,13 @@ namespace Jellyfin.LiveTv.TunerHosts
 
         public DateTime DateOpened { get; protected set; }
 
+        /// <summary>
+        /// How many seconds of already buffered stream a viewer joining a running stream gets.
+        /// </summary>
+        internal const double JoinBacklogSeconds = 2.5;
+
+        private const int TsPacketSize = 188;
+
         protected void SetTempFilePath(string extension)
         {
             TempFilePath = Path.Combine(_configurationManager.GetTranscodePath(), UniqueId + "." + extension);
@@ -104,13 +111,42 @@ namespace Jellyfin.LiveTv.TunerHosts
                 IODefaults.FileStreamBufferSize,
                 FileOptions.SequentialScan | FileOptions.Asynchronous);
 
-            bool seekFile = (DateTime.UtcNow - DateOpened).TotalSeconds > 10;
-            if (seekFile)
+            // A viewer joining a stream that is already running starts a couple of seconds behind the live point
+            // rather than at the start of the buffer file. The backlog fills the player's start buffer at once, so a
+            // shared or pre-tuned channel shows a picture almost immediately instead of waiting for fresh data.
+            var openFor = DateTime.UtcNow - DateOpened;
+            if (openFor.TotalSeconds > JoinBacklogSeconds && stream.CanSeek)
             {
-                TrySeek(stream, -20000);
+                try
+                {
+                    stream.Seek(GetJoinPosition(stream.Length, openFor), SeekOrigin.Begin);
+                }
+                catch (IOException ex)
+                {
+                    Logger.LogWarning(ex, "Error seeking live stream buffer");
+                }
             }
 
             return stream;
+        }
+
+        /// <summary>
+        /// Gets where in the buffer file a viewer joining a running stream starts: about <see cref="JoinBacklogSeconds"/>
+        /// of stream before the end at its average rate so far, on a transport stream packet boundary.
+        /// </summary>
+        /// <param name="length">The current length of the buffer file.</param>
+        /// <param name="openFor">How long the stream has been open.</param>
+        /// <returns>The position from the start of the file.</returns>
+        internal static long GetJoinPosition(long length, TimeSpan openFor)
+        {
+            if (length <= 0 || openFor <= TimeSpan.Zero)
+            {
+                return 0;
+            }
+
+            var bytesPerSecond = length / openFor.TotalSeconds;
+            var position = Math.Max(0, length - (long)(bytesPerSecond * JoinBacklogSeconds));
+            return position - (position % TsPacketSize);
         }
 
         /// <inheritdoc />
@@ -150,27 +186,5 @@ namespace Jellyfin.LiveTv.TunerHosts
             }
         }
 
-        private void TrySeek(FileStream stream, long offset)
-        {
-            if (!stream.CanSeek)
-            {
-                return;
-            }
-
-            try
-            {
-                stream.Seek(offset, SeekOrigin.End);
-            }
-            catch (IOException)
-            {
-            }
-            catch (ArgumentException)
-            {
-            }
-            catch (Exception ex)
-            {
-                Logger.LogError(ex, "Error seeking stream");
-            }
-        }
     }
 }

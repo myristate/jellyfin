@@ -58,6 +58,11 @@ namespace Emby.Server.Implementations.Library
         private readonly IDirectoryService _directoryService;
         private readonly IMediaStreamRepository _mediaStreamRepository;
         private readonly IMediaAttachmentRepository _mediaAttachmentRepository;
+        /// <summary>
+        /// How long a live stream stays open after its last viewer leaves.
+        /// </summary>
+        private static readonly TimeSpan LiveStreamCloseGracePeriod = TimeSpan.FromSeconds(20);
+
         private readonly ConcurrentDictionary<string, ILiveStream> _openStreams = new ConcurrentDictionary<string, ILiveStream>(StringComparer.OrdinalIgnoreCase);
         private readonly AsyncNonKeyedLocker _liveStreamLocker = new(1);
         private readonly JsonSerializerOptions _jsonOptions = JsonDefaults.Options;
@@ -653,7 +658,17 @@ namespace Emby.Server.Implementations.Library
 
                 var currentLiveStreams = _openStreams.Values.ToList();
 
-                liveStream = await provider.OpenMediaSource(keyId, currentLiveStreams, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    liveStream = await provider.OpenMediaSource(keyId, currentLiveStreams, cancellationToken).ConfigureAwait(false);
+                }
+                catch (LiveTvConflictException) when (_openStreams.Values.Any(i => i.ConsumerCount <= 0))
+                {
+                    // The tuner had no free tuner, but some are only held by streams kept open after their last viewer
+                    // left. Close them and try once more.
+                    await CloseIdleLiveStreams().ConfigureAwait(false);
+                    liveStream = await provider.OpenMediaSource(keyId, _openStreams.Values.ToList(), cancellationToken).ConfigureAwait(false);
+                }
 
                 mediaSource = liveStream.MediaSource;
 
@@ -664,6 +679,14 @@ namespace Emby.Server.Implementations.Library
                 }
 
                 SetKeyProperties(provider, mediaSource);
+
+                // Every open of a channel has the same live stream id. A new stream (rather than the running one shared)
+                // means the previous stream wasn't reusable, so close it instead of losing track of it with its tuner.
+                if (_openStreams.TryGetValue(mediaSource.LiveStreamId, out var previous) && !ReferenceEquals(previous, liveStream))
+                {
+                    _logger.LogInformation("Replacing live stream {0}, closing the previous one", mediaSource.LiveStreamId);
+                    await previous.Close().ConfigureAwait(false);
+                }
 
                 _openStreams[mediaSource.LiveStreamId] = liveStream;
             }
@@ -1020,15 +1043,67 @@ namespace Emby.Server.Implementations.Library
 
                     if (liveStream.ConsumerCount <= 0)
                     {
-                        _openStreams.TryRemove(id, out _);
+                        liveStream.ConsumerCount = 0;
 
-                        _logger.LogInformation("Closing live stream {0}", id);
+                        if (liveStream.EnableStreamSharing)
+                        {
+                            // Keep the tuner on the channel for a moment: flicking back, a client retry or a guide preview
+                            // turning into full screen then shares the running stream instead of tuning from scratch
+                            _logger.LogInformation("Keeping live stream {0} open for {1} seconds", id, LiveStreamCloseGracePeriod.TotalSeconds);
+                            _ = CloseAfterGracePeriod(id, liveStream);
+                            return;
+                        }
 
-                        await liveStream.Close().ConfigureAwait(false);
-                        _logger.LogInformation("Live stream {0} closed successfully", id);
+                        await CloseOpenLiveStream(id, liveStream).ConfigureAwait(false);
                     }
                 }
             }
+        }
+
+        private async Task CloseAfterGracePeriod(string id, ILiveStream liveStream)
+        {
+            try
+            {
+                await Task.Delay(LiveStreamCloseGracePeriod).ConfigureAwait(false);
+
+                using (await _liveStreamLocker.LockAsync().ConfigureAwait(false))
+                {
+                    // Only close it if nobody started watching it again in the meantime
+                    if (_openStreams.TryGetValue(id, out var current) && ReferenceEquals(current, liveStream) && liveStream.ConsumerCount <= 0)
+                    {
+                        await CloseOpenLiveStream(id, liveStream).ConfigureAwait(false);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error closing live stream {0}", id);
+            }
+        }
+
+        /// <summary>
+        /// Closes streams kept open after their last viewer left. Must be called holding the live stream lock.
+        /// </summary>
+        /// <returns>The number of streams closed.</returns>
+        private async Task<int> CloseIdleLiveStreams()
+        {
+            var idle = _openStreams.Where(i => i.Value.ConsumerCount <= 0).ToList();
+            foreach (var (id, liveStream) in idle)
+            {
+                await CloseOpenLiveStream(id, liveStream).ConfigureAwait(false);
+            }
+
+            return idle.Count;
+        }
+
+        private async Task CloseOpenLiveStream(string id, ILiveStream liveStream)
+        {
+            _openStreams.TryRemove(id, out _);
+
+            _logger.LogInformation("Closing live stream {0}", id);
+
+            await liveStream.Close().ConfigureAwait(false);
+            _logger.LogInformation("Live stream {0} closed successfully", id);
         }
 
         private (IMediaSourceProvider MediaSourceProvider, string KeyId) GetProvider(string key)
