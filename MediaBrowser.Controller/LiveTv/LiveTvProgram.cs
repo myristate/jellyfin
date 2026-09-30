@@ -162,6 +162,20 @@ namespace MediaBrowser.Controller.LiveTv
         [JsonIgnore]
         public override bool SupportsAncestors => false;
 
+        /// <inheritdoc />
+        /// <remarks>Programs have no parents, so they carry the tags of their channel for parental controls.</remarks>
+        public override List<string> GetInheritedTags()
+        {
+            var list = base.GetInheritedTags();
+
+            if (!ChannelId.IsEmpty() && LibraryManager.GetItemById(ChannelId) is { } channel)
+            {
+                list.AddRange(channel.Tags);
+            }
+
+            return list.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
         public override List<string> GetUserDataKeys()
         {
             var list = base.GetUserDataKeys();

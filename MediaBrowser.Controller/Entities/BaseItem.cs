@@ -1930,7 +1930,7 @@ namespace MediaBrowser.Controller.Entities
             return LocalizationManager.GetRatingScore(rating, GetPreferredMetadataCountryCode());
         }
 
-        public List<string> GetInheritedTags()
+        public virtual List<string> GetInheritedTags()
         {
             var list = new List<string>();
             list.AddRange(Tags);

@@ -1145,7 +1145,10 @@ public sealed partial class BaseItemRepository
                 !blockedTagItemIds.Contains(e.Id)
                 && !(e.SeriesId.HasValue && blockedTagItemIds.Contains(e.SeriesId.Value))
                 && !e.Parents!.Any(p => blockedTagItemIds.Contains(p.ParentItemId))
-                && !(e.TopParentId.HasValue && blockedTagItemIds.Contains(e.TopParentId.Value)));
+                && !(e.TopParentId.HasValue && blockedTagItemIds.Contains(e.TopParentId.Value))
+
+                // Live TV programs have no parents, they carry the tags of their channel
+                && !(e.ChannelId.HasValue && blockedTagItemIds.Contains(e.ChannelId.Value)));
         }
 
         if (filter.IncludeInheritedTags.Length > 0)
@@ -1162,6 +1165,9 @@ public sealed partial class BaseItemRepository
                 || (e.SeriesId.HasValue && allowedTagItemIds.Contains(e.SeriesId.Value))
                 || e.Parents!.Any(p => allowedTagItemIds.Contains(p.ParentItemId))
                 || (e.TopParentId.HasValue && allowedTagItemIds.Contains(e.TopParentId.Value))
+
+                // Live TV programs have no parents, they carry the tags of their channel
+                || (e.ChannelId.HasValue && allowedTagItemIds.Contains(e.ChannelId.Value))
 
                 // People don't carry the tags of the media they appear in and would never match
                 || e.Type == personTypeName
