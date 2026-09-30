@@ -53,6 +53,11 @@ public sealed class RecordingsManager : IRecordingsManager, IDisposable
 
     private readonly ConcurrentDictionary<string, ActiveRecordingInfo> _activeRecordings = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// How long probing a channel for a recording may take (Finly), longer than for live viewing.
+    /// </summary>
+    internal static readonly TimeSpan RecordingProbeTimeout = TimeSpan.FromSeconds(20);
+
     // (Finly) The live streams recordings are using, which the live stream watchdog leaves alone
     private readonly ConcurrentDictionary<string, int> _recordingLiveStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly AsyncNonKeyedLocker _recordingDeleteSemaphore = new();
@@ -328,12 +333,14 @@ public sealed class RecordingsManager : IRecordingsManager, IDisposable
             IDirectStreamProvider? directStreamProvider = null;
             if (mediaStreamInfo.RequiresOpening)
             {
+                // (Finly) A recording gives the channel longer to be identified than a viewer waiting for a picture
                 var liveStreamResponse = await _mediaSourceManager.OpenLiveStreamInternal(
                     new LiveStreamRequest
                     {
                         ItemId = channel.Id,
                         OpenToken = mediaStreamInfo.OpenToken
                     },
+                    new LiveStreamOpenOptions { ProbeTimeout = RecordingProbeTimeout },
                     CancellationToken.None).ConfigureAwait(false);
 
                 mediaStreamInfo = liveStreamResponse.Item1.MediaSource;

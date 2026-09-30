@@ -715,6 +715,15 @@ public sealed class TranscodeManager : ITranscodeManager, IDisposable
         else
         {
             _logger.LogError("FFmpeg exited with code {0}", process.ExitCode);
+
+            // (Finly) ffmpeg failing on a live channel by itself, rather than being stopped, may mean the channel's
+            // format changed since it was probed: probe it again next time
+            if (job.MediaSource?.IsInfiniteStream == true
+                && !string.IsNullOrEmpty(job.LiveStreamId)
+                && job.CancellationTokenSource?.IsCancellationRequested == false)
+            {
+                _mediaSourceManager.InvalidateLiveStreamProbe(job.LiveStreamId);
+            }
         }
 
         job.Dispose();

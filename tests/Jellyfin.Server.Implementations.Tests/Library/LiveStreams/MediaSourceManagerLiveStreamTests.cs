@@ -1,10 +1,12 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoFixture;
 using AutoFixture.AutoMoq;
 using Emby.Server.Implementations.IO;
 using Emby.Server.Implementations.Library;
+using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.Dto;
@@ -18,6 +20,8 @@ namespace Jellyfin.Server.Implementations.Tests.Library.LiveStreams;
 public sealed class MediaSourceManagerLiveStreamTests : IDisposable
 {
     private readonly FakeMediaSourceProvider _provider = new();
+    private readonly string _cachePath = Path.Combine(Path.GetTempPath(), "finly-msm-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly Mock<IApplicationPaths> _appPaths;
     private readonly Mock<IUserManager> _userManager;
     private readonly MediaSourceManager _manager;
 
@@ -26,11 +30,20 @@ public sealed class MediaSourceManagerLiveStreamTests : IDisposable
         IFixture fixture = new Fixture().Customize(new AutoMoqCustomization { ConfigureMembers = true });
         fixture.Inject<IFileSystem>(fixture.Create<ManagedFileSystem>());
         _userManager = fixture.Freeze<Mock<IUserManager>>();
+        _appPaths = fixture.Freeze<Mock<IApplicationPaths>>();
+        _appPaths.Setup(a => a.CachePath).Returns(_cachePath);
         _manager = fixture.Create<MediaSourceManager>();
         _manager.AddParts([_provider]);
     }
 
-    public void Dispose() => _manager.Dispose();
+    public void Dispose()
+    {
+        _manager.Dispose();
+        if (Directory.Exists(_cachePath))
+        {
+            Directory.Delete(_cachePath, true);
+        }
+    }
 
     [Fact]
     public async Task Open_SameChannelTwiceAtOnce_SharesOneStream()
@@ -248,6 +261,19 @@ public sealed class MediaSourceManagerLiveStreamTests : IDisposable
         await Assert.ThrowsAsync<LiveTvConflictException>(() => Open("bbc1"));
 
         Assert.False(idle.IsClosed);
+    }
+
+    [Fact]
+    public async Task InvalidateLiveStreamProbe_DeletesTheChannelsProbe()
+    {
+        var opened = await Open("bbc1");
+        var cacheFile = LiveStreamHelper.GetProbeCachePath(_appPaths.Object, FakeMediaSourceProvider.OpenToken("bbc1"));
+        Directory.CreateDirectory(Path.GetDirectoryName(cacheFile)!);
+        await File.WriteAllTextAsync(cacheFile, "{}", TestContext.Current.CancellationToken);
+
+        _manager.InvalidateLiveStreamProbe(opened.Item1.MediaSource.LiveStreamId);
+
+        Assert.False(File.Exists(cacheFile));
     }
 
     private Task<Tuple<LiveStreamResponse, IDirectStreamProvider>> Open(string channel)

@@ -950,7 +950,7 @@ namespace Emby.Server.Implementations.Library
             };
 
             await new LiveStreamHelper(_mediaEncoder, _logger, _appPaths)
-                .AddMediaInfoWithProbe(stream, false, false, cancellationToken).ConfigureAwait(false);
+                .AddMediaInfoWithProbe(stream, false, null, false, LiveStreamHelper.RecordingProbeTimeout, cancellationToken).ConfigureAwait(false);
 
             return [stream];
         }

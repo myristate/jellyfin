@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading;
@@ -263,6 +264,29 @@ namespace Emby.Server.Implementations.Library
                     liveStream.ConsumerCount);
                 await CloseOpenLiveStream(id, liveStream).ConfigureAwait(false);
                 return true;
+            }
+        }
+
+        /// <inheritdoc />
+        public void InvalidateLiveStreamProbe(string liveStreamId)
+        {
+            if (string.IsNullOrEmpty(liveStreamId) || !_liveStreamOpenTokens.TryGetValue(liveStreamId, out var openToken))
+            {
+                return;
+            }
+
+            var path = LiveStreamHelper.GetProbeCachePath(_appPaths, openToken);
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                    _logger.LogInformation("Forgot the probe of {Channel}, it will be probed again next time", GetChannelName(liveStreamId));
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogWarning("Couldn't delete the probe of live stream {LiveStreamId}: {Message}", liveStreamId, ex.Message);
             }
         }
 

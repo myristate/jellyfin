@@ -120,6 +120,14 @@ namespace MediaBrowser.Controller.Library
         Task<bool> CloseUnreadLiveStream(string id, ILiveStream liveStream, TimeSpan minimumUnreadTime) => Task.FromResult(false);
 
         /// <summary>
+        /// Forgets what probing a live stream's channel found, so it is probed again next time (Finly).
+        /// </summary>
+        /// <param name="liveStreamId">The live stream id.</param>
+        void InvalidateLiveStreamProbe(string liveStreamId)
+        {
+        }
+
+        /// <summary>
         /// Gets the live stream.
         /// </summary>
         /// <param name="id">The identifier.</param>
