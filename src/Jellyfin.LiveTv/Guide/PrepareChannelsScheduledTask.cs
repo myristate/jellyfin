@@ -93,7 +93,7 @@ public class PrepareChannelsScheduledTask : IScheduledTask, IConfigurableSchedul
             DtoOptions = new DtoOptions(false)
         });
 
-        int prepared = 0, alreadyPrepared = 0, failed = 0;
+        int prepared = 0, alreadyPrepared = 0, notBroadcasting = 0, failed = 0;
         for (var i = 0; i < channels.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -124,6 +124,11 @@ public class PrepareChannelsScheduledTask : IScheduledTask, IConfigurableSchedul
                 await _mediaSourceManager.CloseLiveStream(response.MediaSource.LiveStreamId, true).ConfigureAwait(false);
                 prepared++;
             }
+            catch (LiveTvChannelUnavailableException)
+            {
+                // Off air or gone from the multiplex, tried again next time
+                notBroadcasting++;
+            }
             catch (LiveTvConflictException)
             {
                 // Someone is watching, on this server or another one sharing the tuner: leave the rest for next time
@@ -138,9 +143,10 @@ public class PrepareChannelsScheduledTask : IScheduledTask, IConfigurableSchedul
         }
 
         _logger.LogInformation(
-            "Prepared {Prepared} Live TV channels, {AlreadyPrepared} were already prepared, {Failed} failed",
+            "Prepared {Prepared} Live TV channels, {AlreadyPrepared} were already prepared, {NotBroadcasting} aren't broadcasting, {Failed} failed",
             prepared,
             alreadyPrepared,
+            notBroadcasting,
             failed);
         progress.Report(100);
     }

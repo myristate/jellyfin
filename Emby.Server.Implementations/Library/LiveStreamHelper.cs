@@ -37,7 +37,7 @@ namespace Emby.Server.Implementations.Library
         /// The longest a live stream probe may take. A channel that sends almost nothing, such as a data or off air
         /// service, never fills the probe and would otherwise hold it, and the tuner, for many minutes.
         /// </summary>
-        private static readonly TimeSpan LiveProbeTimeout = TimeSpan.FromSeconds(6);
+        private static readonly TimeSpan LiveProbeTimeout = TimeSpan.FromSeconds(5);
 
         public LiveStreamHelper(IMediaEncoder mediaEncoder, ILogger logger, IApplicationPaths appPaths)
         {

@@ -726,8 +726,12 @@ namespace Emby.Server.Implementations.Library
             }
             catch (TimeoutException ex)
             {
-                _logger.LogWarning("Live stream {LiveStreamId}: {Message}, playing it without stream details", mediaSource.LiveStreamId, ex.Message);
-                AddMediaInfo(mediaSource);
+                // Every broadcasting channel is identified within 2 seconds. One that isn't has sent nothing playable, for
+                // example a part time channel that is off air or one that has moved since the tuner last scanned. Free
+                // the tuner and say so, rather than letting the client wait for a picture that never comes.
+                _logger.LogWarning("Live stream {LiveStreamId}: {Message}, the channel isn't broadcasting", mediaSource.LiveStreamId, ex.Message);
+                await CloseLiveStream(mediaSource.LiveStreamId, true).ConfigureAwait(false);
+                throw new LiveTvChannelUnavailableException("The channel isn't broadcasting right now");
             }
             catch (Exception ex)
             {

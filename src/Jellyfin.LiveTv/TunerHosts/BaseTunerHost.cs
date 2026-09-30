@@ -199,6 +199,8 @@ namespace Jellyfin.LiveTv.TunerHosts
                 }
             }
 
+            LiveTvChannelUnavailableException unavailable = null;
+            var busy = false;
             foreach (var hostTuple in hostsWithChannel)
             {
                 var host = hostTuple.Item1;
@@ -213,10 +215,22 @@ namespace Jellyfin.LiveTv.TunerHosts
                     Logger.LogInformation("Live stream opened after {0}ms", (endTime - startTime).TotalMilliseconds);
                     return liveStream;
                 }
+                catch (LiveTvChannelUnavailableException ex)
+                {
+                    Logger.LogWarning("Channel {Channel} can't be played on {Host}: {Message}", channelInfo.Name, host.Url, ex.Message);
+                    unavailable = ex;
+                }
                 catch (Exception ex)
                 {
                     Logger.LogError(ex, "Error opening tuner");
+                    busy = true;
                 }
+            }
+
+            // Only report the channel as off air when that's the reason every tuner gave, a busy tuner is worth retrying
+            if (unavailable is not null && !busy)
+            {
+                throw unavailable;
             }
 
             throw new LiveTvConflictException("Unable to find host to play channel");

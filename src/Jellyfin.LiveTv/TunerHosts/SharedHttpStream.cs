@@ -86,9 +86,15 @@ namespace Jellyfin.LiveTv.TunerHosts
                 var status = (int)response.StatusCode;
                 response.Dispose();
                 Logger.LogWarning("Tuner refused {Url} with HTTP {Status} {TunerError}", url, status, tunerError);
-                if (status == 503 || (tunerError is not null && tunerError.StartsWith("805", StringComparison.Ordinal)))
+                if (tunerError is null ? status == 503 : tunerError.StartsWith("805", StringComparison.Ordinal))
                 {
                     throw new LiveTvConflictException($"The tuner has no free tuner for this channel ({tunerError ?? status.ToString(CultureInfo.InvariantCulture)})");
+                }
+
+                // 806 Tune Failed (no signal on the multiplex), 807 No Video Data (nothing broadcast on the channel)
+                if (tunerError is not null && (tunerError.StartsWith("806", StringComparison.Ordinal) || tunerError.StartsWith("807", StringComparison.Ordinal)))
+                {
+                    throw new LiveTvChannelUnavailableException($"The channel isn't broadcasting right now ({tunerError})");
                 }
 
                 throw new HttpRequestException($"The tuner refused the stream with HTTP {status} {tunerError}");
