@@ -63,6 +63,11 @@ namespace Emby.Server.Implementations.Library
         /// </summary>
         private static readonly TimeSpan LiveStreamCloseGracePeriod = TimeSpan.FromSeconds(20);
 
+        /// <summary>
+        /// How many times to try opening a live stream when the tuner has no free tuner.
+        /// </summary>
+        private const int LiveStreamConflictAttempts = 4;
+
         // Counts grace period waits per live stream id, so only the latest wait may close the stream
         private readonly ConcurrentDictionary<string, int> _closeGenerations = new(StringComparer.OrdinalIgnoreCase);
 
@@ -661,16 +666,23 @@ namespace Emby.Server.Implementations.Library
 
                 var currentLiveStreams = _openStreams.Values.ToList();
 
-                try
+                for (var attempt = 1; ; attempt++)
                 {
-                    liveStream = await provider.OpenMediaSource(keyId, currentLiveStreams, cancellationToken).ConfigureAwait(false);
-                }
-                catch (LiveTvConflictException) when (_openStreams.Values.Any(i => i.ConsumerCount <= 0))
-                {
-                    // The tuner had no free tuner, but some are only held by streams kept open after their last viewer
-                    // left. Close them and try once more.
-                    await CloseIdleLiveStreams().ConfigureAwait(false);
-                    liveStream = await provider.OpenMediaSource(keyId, _openStreams.Values.ToList(), cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        liveStream = await provider.OpenMediaSource(keyId, currentLiveStreams, cancellationToken).ConfigureAwait(false);
+                        break;
+                    }
+                    catch (LiveTvConflictException) when (attempt < LiveStreamConflictAttempts)
+                    {
+                        // No free tuner. Streams kept open after their last viewer left can be closed to make room, and a
+                        // tuner that was just released (by this server, or another one sharing the tuner) takes a moment
+                        // before the tuner hands it out again, so wait a little and try again.
+                        var closed = await CloseIdleLiveStreams().ConfigureAwait(false);
+                        _logger.LogInformation("No free tuner (attempt {Attempt}), closed {Closed} idle streams, trying again", attempt, closed);
+                        await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt), cancellationToken).ConfigureAwait(false);
+                        currentLiveStreams = _openStreams.Values.ToList();
+                    }
                 }
 
                 mediaSource = liveStream.MediaSource;
