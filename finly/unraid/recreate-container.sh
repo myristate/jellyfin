@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 # Recreate the finly container on the Unraid host from the current finly-server:local image, with the same
 # settings as my-finly.xml. Run on the Unraid host (or pipe over ssh). Only touches the finly container.
+#
+# Roll back to the image before the last build with: recreate-container.sh previous
 set -euo pipefail
 
-mkdir -p /mnt/user/appdata/finly/transcode
-chown nobody:users /mnt/user/appdata/finly/transcode
+IMAGE="finly-server:${1:-local}"
+# Transcodes and Live TV buffers are temporary: keep them on the cache SSD, outside appdata so they're
+# never backed up (Finly)
+TRANSCODE=/mnt/cache/finly-transcode
+
+# Don't remove the running container unless the image to replace it with exists
+docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "No image $IMAGE, leaving finly as it is" >&2; exit 1; }
+
+mkdir -p "$TRANSCODE"
+chown nobody:users "$TRANSCODE"
 
 docker rm -f finly >/dev/null 2>&1 || true
 docker run -d --name=finly --net=bridge --pids-limit 2048 --log-opt max-size=50m --log-opt max-file=1 \
@@ -16,8 +26,11 @@ docker run -d --name=finly --net=bridge --pids-limit 2048 --log-opt max-size=50m
 	-p 8097:8096/tcp \
 	-v /mnt/user/appdata/finly:/config:rw \
 	-v /mnt/user/media/tv/:/tv:ro -v /mnt/user/media/movies/:/movies:ro \
-	-v /mnt/user/appdata/finly/transcode:/transcode:rw \
-	--runtime=nvidia finly-server:local >/dev/null
+	-v "$TRANSCODE":/transcode:rw \
+	--runtime=nvidia "$IMAGE" >/dev/null
+
+# The old transcode folder inside appdata is no longer used
+rm -rf /mnt/user/appdata/finly/transcode
 
 for _ in $(seq 1 60); do
 	if docker logs finly 2>&1 | grep -q "Startup complete"; then
