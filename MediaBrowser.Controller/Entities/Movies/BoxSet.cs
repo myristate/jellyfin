@@ -170,6 +170,17 @@ namespace MediaBrowser.Controller.Entities.Movies
             }
 
             List<BaseItem> linkedItems = null;
+
+            // A collection with nothing left in it but items the user removed goes too (Finly)
+            if (user.GetItemIdSet(PreferenceKind.HiddenItems).Count > 0)
+            {
+                linkedItems = GetLinkedChildren(DtoOptions.StoredColumnsOnly);
+                if (linkedItems.Count > 0 && linkedItems.All(child => child.IsHiddenBy(user)))
+                {
+                    return false;
+                }
+            }
+
             var libraryFolderIds = LibraryFolderIds;
             if (libraryFolderIds is null)
             {

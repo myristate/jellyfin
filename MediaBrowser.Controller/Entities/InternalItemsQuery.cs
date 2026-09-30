@@ -561,8 +561,8 @@ namespace MediaBrowser.Controller.Entities
                 .Select(tag => tag.RemoveDiacritics().ToLowerInvariant())
                 .ToArray();
 
-            HiddenItemIds = user.GetPreferenceValues<Guid>(PreferenceKind.HiddenItems);
-            AllowedItemIds = user.GetPreferenceValues<Guid>(PreferenceKind.AllowedItems);
+            HiddenItemIds = user.GetItemIdSet(PreferenceKind.HiddenItems).ToArray();
+            AllowedItemIds = user.GetItemIdSet(PreferenceKind.AllowedItems).ToArray();
 
             UserHasContentRestrictions = user.HasContentRestrictions();
             User = user;

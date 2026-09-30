@@ -659,7 +659,7 @@ public sealed partial class BaseItemRepository
 
     /// <summary>
     /// Builds the test for items a parent let the user see, and everything below them, or <c>null</c> when there are
-    /// none.
+    /// none. A Live TV programme goes with its channel and an alternate version with its main version (Finly).
     /// </summary>
     /// <param name="context">The database context.</param>
     /// <param name="filter">The query filter, with the user's allowed items.</param>
@@ -676,7 +676,9 @@ public sealed partial class BaseItemRepository
         var belowAllowed = ItemsBelowTaggedAncestor(context, allowedItems);
         return e => allowedIds.Contains(e.Id)
             || (e.SeriesId.HasValue && allowedIds.Contains(e.SeriesId.Value))
-            || belowAllowed.Contains(e.Id);
+            || belowAllowed.Contains(e.Id)
+            || (e.ChannelId.HasValue && allowedIds.Contains(e.ChannelId.Value))
+            || (e.PrimaryVersionId.HasValue && allowedIds.Contains(e.PrimaryVersionId.Value));
     }
 
     /// <summary>
@@ -691,7 +693,9 @@ public sealed partial class BaseItemRepository
         => allowed is null ? restriction : restriction.Or(allowed);
 
     /// <summary>
-    /// Leaves out the items the user removed from their library, and everything below them.
+    /// Leaves out the items the user removed from their library, and everything below them (Finly). A Live TV
+    /// programme goes with its channel and an alternate version with its main version, and a collection or playlist
+    /// with nothing left in it but removed items goes too.
     /// </summary>
     /// <param name="context">The database context.</param>
     /// <param name="baseQuery">The query to filter.</param>
@@ -711,10 +715,22 @@ public sealed partial class BaseItemRepository
         var hiddenItems = context.BaseItems.Where(b => hiddenIds.Contains(b.Id)).Select(b => b.Id);
         var belowHidden = ItemsBelowTaggedAncestor(context, hiddenItems);
 
+        // Only a manual link makes an item a container of other items, as for the parental rating
+        var members = context.LinkedChildren
+            .Where(lc => lc.ChildType == Database.Implementations.Entities.LinkedChildType.Manual);
+
         return baseQuery.Where(e =>
             !hiddenIds.Contains(e.Id)
             && !(e.SeriesId.HasValue && hiddenIds.Contains(e.SeriesId.Value))
-            && !belowHidden.Contains(e.Id));
+            && !belowHidden.Contains(e.Id)
+            && !(e.ChannelId.HasValue && hiddenIds.Contains(e.ChannelId.Value))
+            && !(e.PrimaryVersionId.HasValue && hiddenIds.Contains(e.PrimaryVersionId.Value))
+            && (!members.Any(lc => lc.ParentId == e.Id)
+                || members.Any(lc => lc.ParentId == e.Id
+                    && !hiddenIds.Contains(lc.ChildId)
+                    && !(lc.Child!.SeriesId.HasValue && hiddenIds.Contains(lc.Child.SeriesId.Value))
+                    && !(lc.Child.PrimaryVersionId.HasValue && hiddenIds.Contains(lc.Child.PrimaryVersionId.Value))
+                    && !belowHidden.Contains(lc.ChildId))));
     }
 
     /// <summary>
