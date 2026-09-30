@@ -193,13 +193,13 @@ public class HiddenItemsController : BaseJellyfinApiController
     /// <summary>
     /// Tells which restricted profiles can see each item, for showing parents what the children have (Finly).
     /// </summary>
-    /// <param name="ids">The item ids.</param>
+    /// <param name="ids">The item ids, none to only list the restricted profiles.</param>
     /// <response code="200">For each item, the ids of the restricted profiles that can see it.</response>
     /// <returns>The profiles and what they can see.</returns>
     [HttpGet("Items/ProfileAccess")]
     [Authorize(Policy = Policies.RequiresElevation)]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public ActionResult<ProfileAccessResult> GetProfileAccess([FromQuery, Required, ModelBinder(typeof(Jellyfin.Api.ModelBinders.CommaDelimitedCollectionModelBinder))] Guid[] ids)
+    public ActionResult<ProfileAccessResult> GetProfileAccess([FromQuery, ModelBinder(typeof(Jellyfin.Api.ModelBinders.CommaDelimitedCollectionModelBinder))] Guid[] ids)
     {
         var result = new ProfileAccessResult();
         var profiles = _userManager.GetUsers().Where(u => u.HasContentRestrictions() || IsOnRestrictedLevel(u)).ToList();
