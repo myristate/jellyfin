@@ -1,3 +1,4 @@
+using System.Net.Http;
 using Jellyfin.LiveTv.Channels;
 using Jellyfin.LiveTv.Guide;
 using Jellyfin.LiveTv.IO;
@@ -10,6 +11,7 @@ using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Model.IO;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.LiveTv.Extensions;
 
@@ -38,6 +40,7 @@ public static class LiveTvServiceCollectionExtensions
         services.AddSingleton<IRecordingsManager, RecordingsManager>();
 
         services.AddSingleton<ILiveTvService, DefaultLiveTvService>();
+        services.AddSingleton(s => new HdHomerunTunerStatus(s.GetRequiredService<IHttpClientFactory>(), s.GetRequiredService<ILogger<HdHomerunTunerStatus>>()));
         services.AddSingleton<ITunerHost, HdHomerunHost>();
         services.AddSingleton<ITunerHost, M3UTunerHost>();
         services.AddSingleton<SchedulesDirect>();

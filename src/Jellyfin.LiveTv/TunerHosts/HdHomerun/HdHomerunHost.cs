@@ -50,14 +50,15 @@ namespace Jellyfin.LiveTv.TunerHosts.HdHomerun
             IHttpClientFactory httpClientFactory,
             IServerApplicationHost appHost,
             ISocketFactory socketFactory,
-            IStreamHelper streamHelper)
+            IStreamHelper streamHelper,
+            HdHomerunTunerStatus tunerStatus)
             : base(config, logger, fileSystem)
         {
             _httpClientFactory = httpClientFactory;
             _appHost = appHost;
             _socketFactory = socketFactory;
             _streamHelper = streamHelper;
-            _tunerStatus = new HdHomerunTunerStatus(httpClientFactory, logger);
+            _tunerStatus = tunerStatus;
 
             _jsonOptions = new JsonSerializerOptions(JsonDefaults.Options);
             _jsonOptions.Converters.Add(new JsonBoolNumberConverter());
@@ -164,7 +165,7 @@ namespace Jellyfin.LiveTv.TunerHosts.HdHomerun
             }
         }
 
-        private static string GetApiUrl(TunerHostInfo info)
+        internal static string GetApiUrl(TunerHostInfo info)
         {
             var url = info.Url;
 
