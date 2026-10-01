@@ -4,6 +4,7 @@ using Jellyfin.LiveTv.Guide;
 using Jellyfin.LiveTv.IO;
 using Jellyfin.LiveTv.Listings;
 using Jellyfin.LiveTv.Recordings;
+using Jellyfin.LiveTv.Signal;
 using Jellyfin.LiveTv.Timers;
 using Jellyfin.LiveTv.TunerHosts;
 using Jellyfin.LiveTv.TunerHosts.HdHomerun;
@@ -41,6 +42,8 @@ public static class LiveTvServiceCollectionExtensions
 
         services.AddSingleton<ILiveTvService, DefaultLiveTvService>();
         services.AddSingleton(s => new HdHomerunTunerStatus(s.GetRequiredService<IHttpClientFactory>(), s.GetRequiredService<ILogger<HdHomerunTunerStatus>>()));
+        services.AddSingleton<ChannelSignalService>();
+        services.AddSingleton<IChannelSignalService>(s => s.GetRequiredService<ChannelSignalService>());
         services.AddSingleton<ITunerHost, HdHomerunHost>();
         services.AddSingleton<ITunerHost, M3UTunerHost>();
         services.AddSingleton<SchedulesDirect>();

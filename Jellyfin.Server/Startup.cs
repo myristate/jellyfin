@@ -12,6 +12,7 @@ using Jellyfin.Api.Middleware;
 using Jellyfin.Database.Implementations;
 using Jellyfin.LiveTv.Extensions;
 using Jellyfin.LiveTv.Recordings;
+using Jellyfin.LiveTv.Signal;
 using Jellyfin.LiveTv.TunerHosts;
 using Jellyfin.MediaEncoding.Hls.Extensions;
 using Jellyfin.Networking;
@@ -154,6 +155,7 @@ namespace Jellyfin.Server
             services.AddHostedService<TranscodeCacheCleaner>();
             services.AddHostedService<RecordingsHost>();
             services.AddHostedService<LiveStreamWatchdog>();
+            services.AddHostedService<ChannelSignalMonitor>();
             services.AddHostedService<TranscodeFolderSweeper>();
             services.AddHostedService<AutoDiscoveryHost>();
             services.AddHostedService<NfoUserDataSaver>();
