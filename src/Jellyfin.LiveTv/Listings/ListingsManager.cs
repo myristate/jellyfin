@@ -146,7 +146,7 @@ public class ListingsManager : IListingsManager
 
             var epgChannels = await GetEpgChannels(provider, providerInfo, true, cancellationToken).ConfigureAwait(false);
 
-            var epgChannel = GetEpgChannelFromTunerChannel(providerInfo.ChannelMappings, channel, epgChannels);
+            var epgChannel = GetEpgChannelFromTunerChannel(providerInfo.ChannelMappings, channel, epgChannels, providerInfo.MatchMappedChannelsOnly);
             if (epgChannel is null)
             {
                 _logger.LogDebug("EPG channel not found for tuner channel {0}-{1} from {2}-{3}", channel.Number, channel.Name, provider.Name, providerInfo.ListingsId ?? string.Empty);
@@ -294,7 +294,7 @@ public class ListingsManager : IListingsManager
 
         foreach (var tunerChannel in tunerChannels)
         {
-            var epgChannel = GetEpgChannelFromTunerChannel(info.ChannelMappings, tunerChannel, epgChannels);
+            var epgChannel = GetEpgChannelFromTunerChannel(info.ChannelMappings, tunerChannel, epgChannels, info.MatchMappedChannelsOnly);
             if (epgChannel is null)
             {
                 continue;
@@ -387,11 +387,33 @@ public class ListingsManager : IListingsManager
         return result;
     }
 
-    private static ChannelInfo? GetEpgChannelFromTunerChannel(
+    internal static ChannelInfo? GetEpgChannelFromTunerChannel(
         NameValuePair[] mappings,
         ChannelInfo tunerChannel,
-        EpgChannelData epgChannelData)
+        EpgChannelData epgChannelData,
+        bool mappedChannelsOnly = false)
     {
+        // (Finly) A gap-filling source only answers for channels explicitly linked to it
+        if (mappedChannelsOnly)
+        {
+            foreach (var key in new[] { tunerChannel.Id, tunerChannel.TunerChannelId, tunerChannel.Number })
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    continue;
+                }
+
+                var link = Array.Find(mappings ?? [], m => string.Equals(m.Name, key, StringComparison.OrdinalIgnoreCase));
+                var linked = link is null ? null : epgChannelData.GetChannelById(link.Value);
+                if (linked is not null)
+                {
+                    return linked;
+                }
+            }
+
+            return null;
+        }
+
         if (!string.IsNullOrWhiteSpace(tunerChannel.Id))
         {
             var mappedTunerChannelId = GetMappedChannel(tunerChannel.Id, mappings);
@@ -445,9 +467,7 @@ public class ListingsManager : IListingsManager
 
         if (!string.IsNullOrWhiteSpace(tunerChannel.Name))
         {
-            var normalizedName = EpgChannelData.NormalizeName(tunerChannel.Name);
-
-            var channel = epgChannelData.GetChannelByName(normalizedName);
+            var channel = epgChannelData.GetChannelByName(tunerChannel.Name);
             if (channel is not null)
             {
                 return channel;

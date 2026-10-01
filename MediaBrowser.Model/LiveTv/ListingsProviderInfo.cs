@@ -49,6 +49,13 @@ namespace MediaBrowser.Model.LiveTv
 
         public NameValuePair[] ChannelMappings { get; set; }
 
+        /// <summary>
+        /// Gets or sets a value indicating whether this provider only supplies listings for tuner channels linked to it in
+        /// <see cref="ChannelMappings"/>, never matching channels by id, number or name (Finly). For extra guide sources
+        /// that fill gaps: their own channel numbers and names can otherwise match unrelated tuner channels.
+        /// </summary>
+        public bool MatchMappedChannelsOnly { get; set; }
+
         public string MoviePrefix { get; set; }
 
         public string PreferredLanguage { get; set; }
